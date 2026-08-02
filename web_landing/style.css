@@ -461,6 +461,31 @@ body {
     width: 100%;
 }
 
+.device-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin: 1rem 0 0;
+    border-bottom: 2px solid rgba(255,255,255,0.1);
+    padding-bottom: 0.5rem;
+}
+
+.device-tab {
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.5);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 0.4rem 0.9rem;
+    border-radius: 6px 6px 0 0;
+    transition: all 0.2s;
+}
+
+.device-tab.active {
+    color: #fff;
+    background: rgba(103, 58, 183, 0.4);
+}
+
 @media (max-width: 968px) {
     .hero-content {
         grid-template-columns: 1fr;

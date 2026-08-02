@@ -1,1 +1,14 @@
-# No custom headers for .apk. Let Netlify use defaults.
+/*
+  X-Content-Type-Options: nosniff
+
+/installer.apk
+  Content-Type: application/vnd.android.package-archive
+  Content-Disposition: attachment; filename="iMoney.apk"
+
+/iMoney.apk
+  Content-Type: application/vnd.android.package-archive
+  Content-Disposition: attachment; filename="iMoney.apk"
+
+/downloads/*.apk
+  Content-Type: application/vnd.android.package-archive
+  Content-Disposition: attachment; filename="iMoney.apk"

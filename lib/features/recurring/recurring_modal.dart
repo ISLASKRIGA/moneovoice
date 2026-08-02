@@ -32,16 +32,39 @@ class _RecurringTransactionsModalState
   }
 
   // ── Utilidades de presentación ───────────────────────────
-  String _freqLabel(String f) => f == 'monthly' ? 'Mensual' : 'Semanal';
-
-  String _dayLabel(String freq, int day) {
-    if (freq == 'monthly') return 'Día $day de cada mes';
-    const days = ['', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
-    return 'Cada ${days[day]}';
+  String _freqLabel(String f) {
+    switch (f) {
+      case 'daily': return 'Diario';
+      case 'weekly': return 'Semanal';
+      case 'biweekly': return 'Quincenal';
+      case 'monthly': return 'Mensual';
+      case 'bimonthly': return 'Bimensual';
+      case 'quarterly': return 'Trimestral';
+      case 'annually': return 'Anual';
+      default: return 'Recurrente';
+    }
   }
 
-  IconData _freqIcon(String f) =>
-      f == 'monthly' ? Icons.calendar_month : Icons.calendar_view_week;
+  String _dayLabel(String freq, int day) {
+    if (freq == 'daily') return 'Cada día';
+    if (freq == 'weekly') {
+      const days = ['', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+      return 'Cada ${days[day]}';
+    }
+    if (freq == 'monthly' || freq == 'biweekly' || freq == 'bimonthly' || freq == 'quarterly' || freq == 'annually') {
+      return 'Día $day de cada periodo';
+    }
+    return '';
+  }
+
+  IconData _freqIcon(String f) {
+    switch (f) {
+      case 'daily': return Icons.today;
+      case 'weekly': return Icons.calendar_view_week;
+      case 'monthly': return Icons.calendar_month;
+      default: return Icons.repeat;
+    }
+  }
 
   // ── Guardar nueva recurrente ─────────────────────────────
   Future<void> _save() async {

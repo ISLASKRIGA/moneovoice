@@ -1,13 +1,15 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/di/dependency_injection.dart';
 
+@immutable
 class CategoryItem {
   final String name;
   final String emoji;
 
-  CategoryItem({required this.name, required this.emoji});
+  const CategoryItem({required this.name, required this.emoji});
 
   Map<String, dynamic> toJson() => {'name': name, 'emoji': emoji};
 
@@ -17,6 +19,17 @@ class CategoryItem {
       emoji: json['emoji'] as String,
     );
   }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CategoryItem &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          emoji == other.emoji;
+
+  @override
+  int get hashCode => Object.hash(name, emoji);
 }
 
 class CategoryNotifier extends StateNotifier<List<CategoryItem>> {
@@ -31,9 +44,9 @@ class CategoryNotifier extends StateNotifier<List<CategoryItem>> {
       final List<dynamic> decoded = jsonDecode(jsonStr);
       return decoded.map((e) => CategoryItem.fromJson(e as Map<String, dynamic>)).toList();
     }
-    
-    // Default categories
-    return [
+
+    // Categorías por defecto
+    return const [
       CategoryItem(name: 'Comida', emoji: '🍔'),
       CategoryItem(name: 'Transporte', emoji: '🚗'),
       CategoryItem(name: 'Ropa', emoji: '🛍️'),
@@ -44,8 +57,7 @@ class CategoryNotifier extends StateNotifier<List<CategoryItem>> {
   }
 
   void _saveCategories(List<CategoryItem> categories) {
-    final List<Map<String, dynamic>> toSave = categories.map((c) => c.toJson()).toList();
-    _prefs.setString(_categoriesKey, jsonEncode(toSave));
+    _prefs.setString(_categoriesKey, jsonEncode(categories.map((c) => c.toJson()).toList()));
     state = categories;
   }
 

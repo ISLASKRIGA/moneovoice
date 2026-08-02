@@ -5,6 +5,7 @@ import '../../voice/voice_service.dart';
 import '../../nlp/intent_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../features/settings/settings_provider.dart';
+export '../../features/premium/premium_provider.dart' show premiumProvider, kFreeTransactionLimit, kFreeListLimit;
 
 final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
   throw UnimplementedError('Prefs must be overridden in main');
@@ -20,7 +21,9 @@ final transactionRepositoryProvider = Provider<TransactionRepository>((ref) {
 });
 
 final voiceServiceProvider = Provider<VoiceService>((ref) {
-  return VoiceService()..init(); // Auto-init on usage
+  final service = VoiceService();
+  ref.onDispose(service.dispose);
+  return service;
 });
 
 final intentParserProvider = Provider<IntentParser>((ref) {

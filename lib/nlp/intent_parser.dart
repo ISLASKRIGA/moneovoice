@@ -255,8 +255,55 @@ class IntentParser {
     // ── PASO 3: Extraer fecha Y limpiar el texto ───────────
     // CRÍTICO: la fecha se elimina ANTES de buscar montos.
     final dateResult = _extractDateAndClean(rawNorm);
-    final cleanText  = dateResult.cleanText; // texto sin expresiones temporales
+    String cleanText = dateResult.cleanText; // texto sin expresiones temporales
     final date       = dateResult.date;
+
+    // ── PASO 3b: Detectar y extraer categoría explícita ────
+    String? explicitCategoryHint;
+    final catHintMatch = RegExp(
+      r'\bcategor[ií]a\s+(\w+)',
+      caseSensitive: false,
+    ).firstMatch(cleanText);
+    if (catHintMatch != null) {
+      explicitCategoryHint = catHintMatch.group(1);
+      cleanText = cleanText.replaceAll(catHintMatch.group(0)!, '').trim();
+      cleanText = cleanText.replaceAll(RegExp(r'\s+'), ' ').trim();
+    }
+
+    // ── PASO 3c: Detectar y extraer etiquetas ("etiqueta crédito", "hashtag comida", "#viaje") ────
+    final tags = <String>[];
+    
+    // 1. Extraer símbolos # literales que el dictado por voz pudo haber convertido automáticamente
+    final literalHashes = RegExp(r'#([a-záéíóúüñ]+)', caseSensitive: false).allMatches(cleanText).toList();
+    for (final m in literalHashes) {
+      tags.add('#${m.group(1)}');
+      cleanText = cleanText.replaceAll(m.group(0)!, '').trim();
+    }
+
+    // 2. Extraer a través de la palabra hablada "etiqueta" o "hashtag"
+    final tagMatch = RegExp(r'\b(etiqueta[s]?|hashtag[s]?)\b', caseSensitive: false).firstMatch(cleanText);
+    if (tagMatch != null) {
+      final tagIdx = tagMatch.start;
+      final textAfter = cleanText.substring(tagMatch.end).trim();
+      
+      // Quitar todo a partir de la palabra gatillo para no alterar otros parsers
+      cleanText = cleanText.substring(0, tagIdx).trim();
+      
+      final parts = textAfter.split(RegExp(r'\s+'));
+      final stopWords = ['en', 'para', 'por', 'a', 'al', 'del', 'con', 'el', 'la', 'los', 'las', 'un', 'una', 'mi', 'tu', 'su'];
+      
+      for (var word in parts) {
+        final w = word.replaceAll(RegExp(r'[^a-záéíóúüñ]'), ''); 
+        if (w.isEmpty) continue;
+        if (stopWords.contains(w)) break; // Si llegamos a otra instrucción, paramos de leer
+        if (w == 'y' || w == 'o' || w == 'e' || w == 'de') continue; 
+        if (w == 'etiqueta' || w == 'etiquetas' || w == 'hashtag' || w == 'hashtags') continue; // Jamás agregar estas como tags
+        
+        tags.add('#$w');
+      }
+    }
+    
+    final String finalTagsStr = tags.isNotEmpty ? ' ' + tags.join(' ') : '';
 
     // ── PASO 4: Detectar tipo (gasto vs ingreso) ───────────
     double expenseScore = 0.0;
@@ -298,7 +345,7 @@ class IntentParser {
         action:      action,
         amount:      totalAmount,
         category:    dominantItem.category,
-        description: _capitalizeFirst(descriptions),
+        description: _capitalizeFirst(descriptions) + finalTagsStr,
         date:        date,
         confidence:  (typeConfidence * 0.9).clamp(0.0, 1.0),
         lineItems:   items,
@@ -306,21 +353,27 @@ class IntentParser {
     }
 
     // ── Ítem único ─────────────────────────────────────────
-    final amount      = _extractTotalAmount(cleanText);
-    final category    = _detectCategory(cleanText);
+    final amount = _extractTotalAmount(cleanText);
+    // Si el usuario dijo "categoría X" explícitamente, úsalo con máxima prioridad;
+    // si no, inferir desde el texto.
+    final category = explicitCategoryHint != null
+        ? _capitalizeFirst(explicitCategoryHint)
+        : _detectCategory(cleanText);
     final description = _buildDescription(cleanText, category);
 
     final singleItem = amount != null
         ? [LineItem(description: description, amount: amount, category: category)]
         : <LineItem>[];
 
+    final descriptionBase = description.isNotEmpty
+          ? _capitalizeFirst(description)
+          : _capitalizeFirst(category);
+
     return FinanceIntent(
       action:      action,
       amount:      amount,
       category:    category,
-      description: description.isNotEmpty
-          ? _capitalizeFirst(description)
-          : _capitalizeFirst(category),
+      description: (descriptionBase + finalTagsStr).trim(),
       date:        date,
       confidence:  typeConfidence,
       lineItems:   singleItem,
@@ -339,7 +392,10 @@ class IntentParser {
 
     // ── A. "hace N días/semanas/meses" ─────────────────────
     final haceNumPattern = RegExp(
-      r'hace\s+(\d+|un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+'
+      r'hace\s+(\d+|un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|'
+      r'once|doce|trece|catorce|quince|dieciseis|diecisiete|dieciocho|diecinueve|'
+      r'veinte|veintiuno|veintidos|veintitres|veinticuatro|veinticinco|'
+      r'treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa)\s+'
       r'(dia|dias|semana|semanas|mes|meses)',
       caseSensitive: false,
     );
@@ -547,19 +603,16 @@ class IntentParser {
   // EXTRACCIÓN DE MONTO (opera sobre texto YA sin fechas)
   // ─────────────────────────────────────────────────────────────
   double? _extractTotalAmount(String text) {
-    // 1. Números en palabras (greedy, más largo primero)
-    for (final entry in _wordNumbers) {
-      if (text.contains(entry.key)) return entry.value;
-    }
-
-    // 2. $número  (prioridad alta → símbolo explícito)
+    // ── PRIORIDAD 1: $número (símbolo explícito) ───────────────
     final symMatch = RegExp(r'\$\s*([\d]{1,7}(?:[.,]\d{1,2})?)').firstMatch(text);
     if (symMatch != null) {
       final v = _parseNumber(symMatch.group(1)!);
       if (v != null) return v;
     }
 
-    // 3. número + unidad monetaria
+    // ── PRIORIDAD 2: número + unidad monetaria explícita ───────
+    // Ej: "100 pesos", "50 mxn" — captura TODOS y devuelve el primero válido.
+    // Esto asegura que "1 kilo de tortillas 100 pesos" → 100.
     final unitMatch = RegExp(
       r'([\d]{1,7}(?:[.,]\d{1,2})?)\s*(?:pesos?|mxn|cop|eur|usd|dolares?)\b',
     ).firstMatch(text);
@@ -568,10 +621,11 @@ class IntentParser {
       if (v != null) return v;
     }
 
-    // 4. Multiplicación: "3 kilos a 15"
+    // ── PRIORIDAD 3: Multiplicación explícita (qty * precio) ───
+    // Ej: "3 kilos a 15", "2 piezas por 50"
     final multMatch = RegExp(
       r'(\d+(?:[.,]\d+)?)\s*(?:kg|kilos?|gramos?|piezas?|litros?|paquetes?|cajas?)?\s*'
-      r'(?:de\s+\w+\s+)?(?:a|por)\s*\$?([\d.,]+)',
+      r'(?:de\s+[\w\s]+?)?(?:a|por)\s*\$?([\d.,]+)',
     ).firstMatch(text);
     if (multMatch != null) {
       final qty   = _parseNumber(multMatch.group(1)!);
@@ -579,15 +633,44 @@ class IntentParser {
       if (qty != null && price != null) return qty * price;
     }
 
-    // 5. Número puro — SOLO si el contexto lo justifica
-    // (no queremos capturar digitos de expresiones que sobrevivieron)
-    final plainMatches = RegExp(r'\b(\d{1,7}(?:[.,]\d{1,2})?)\b').allMatches(text);
-    for (final m in plainMatches) {
-      final v = _parseNumber(m.group(1)!);
-      if (v != null && v >= 1 && v < 10000000) return v;
+    // ── PRIORIDAD 4: Patrón "N [unidad] de [cosa] PRECIO" ──────
+    // Ej: "1 kilo de tortillas 100" → precio = 100 (no la cantidad)
+    // Si la frase empieza con un número de cantidad + unidad, el precio
+    // es el ÚLTIMO número significativo que aparece después.
+    final qtyUnitPattern = RegExp(
+      r'^\s*(\d+(?:[.,]\d+)?)\s*(?:kg|kilos?|gramos?|piezas?|litros?|paquetes?|cajas?|'
+      r'docenas?|unidades?|bolsas?|latas?)\b',
+      caseSensitive: false,
+    );
+    if (qtyUnitPattern.hasMatch(text)) {
+      // Recolectar todos los números del texto; el precio es el último.
+      final allNums = RegExp(r'\b(\d{1,7}(?:[.,]\d{1,2})?)\b')
+          .allMatches(text)
+          .map((m) => _parseNumber(m.group(1)!))
+          .whereType<double>()
+          .toList();
+      if (allNums.length >= 2) {
+        // El último número es el precio; el primero es la cantidad.
+        return allNums.last;
+      }
     }
 
-    return null;
+    // ── PRIORIDAD 5: Números en palabras (greedy, más largo primero) ─
+    for (final entry in _wordNumbers) {
+      if (text.contains(entry.key)) return entry.value;
+    }
+
+    // ── PRIORIDAD 6: Número puro — heurística ─────────────────
+    // Si hay varios números, preferir el mayor (más probable que sea precio).
+    final plainMatches = RegExp(r'\b(\d{1,7}(?:[.,]\d{1,2})?)\b').allMatches(text);
+    double? best;
+    for (final m in plainMatches) {
+      final v = _parseNumber(m.group(1)!);
+      if (v != null && v >= 1 && v < 10000000) {
+        if (best == null || v > best) best = v;
+      }
+    }
+    return best;
   }
 
   double? _extractFirstNumber(String text) {
@@ -621,22 +704,58 @@ class IntentParser {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // DESCRIPCIÓN LIMPIA
+  // DESCRIPCIÓN LIMPIA — extrae solo las palabras más importantes
   // ─────────────────────────────────────────────────────────────
   String _buildDescription(String text, String category) {
     var desc = text;
+
+    // 0. Eliminar indicadores de categoría explícitos: "categoría juegos", "categoria comida"
+    desc = desc.replaceAll(
+        RegExp(r'\bcategor[ií]a\s+\w+', caseSensitive: false), '');
+
+    // 1. Eliminar verbos de gasto/ingreso
     for (final v in _expenseVerbs.keys)  { desc = desc.replaceAll(v, ''); }
     for (final v in _incomeVerbs.keys)   { desc = desc.replaceAll(v, ''); }
-    // Elimina montos
+
+    // 2. Eliminar montos numéricos y sus unidades
     desc = desc.replaceAll(
-        RegExp(r'\$?\s*\d+(?:[.,]\d{1,2})?\s*(?:pesos?|mxn|cop|usd|eur)?'), '');
-    // Elimina artículos y preposiciones comunes
-    desc = desc.replaceAll(
-        RegExp(r'\b(en|de|para|por|a|al|del|un|una|el|la|los|las|con|que|me|le|se|cada\s+uno?)\b'), '');
-    // Limpia espacios múltiples
+        RegExp(r'\$?\s*\d+(?:[.,]\d{1,2})?\s*(?:pesos?|mxn|cop|usd|eur|dolares?)?'), '');
+
+    // 3. Eliminar palabras vacías (stopwords) en español
+    //    Frase completa de artículos, preposiciones, pronombres, cuantificadores
+    const stopwords = [
+      'hace', 'ayer', 'hoy', 'manana', 'antier', 'anteayer',
+      'pasado', 'semana', 'mes', 'dia', 'dias',
+      'en', 'de', 'para', 'por', 'a', 'al', 'del',
+      'un', 'una', 'el', 'la', 'los', 'las', 'con',
+      'que', 'me', 'le', 'se', 'te', 'lo', 'les',
+      'mi', 'tu', 'su', 'mis', 'tus', 'sus',
+      'hay', 'fue', 'fui', 'era', 'son', 'es', 'esta', 'este',
+      'también', 'tambien', 'si', 'no', 'ya', 'muy', 'mas',
+      'pero', 'y', 'o', 'ni', 'e',
+      'otro', 'otra', 'otros', 'otras',
+      'poco', 'mucho', 'tanto', 'algo', 'todo',
+      'cada', 'uno', 'unos', 'unas',
+    ];
+    for (final sw in stopwords) {
+      desc = desc.replaceAll(RegExp('\\b$sw\\b', caseSensitive: false), '');
+    }
+
+    // 4. Limpiar espacios múltiples
     desc = desc.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (desc.length < 3) return category;
-    return desc;
+
+    // 5. Limitar longitud — máximo 4 palabras significativas
+    final words = desc
+        .split(' ')
+        .where((w) => w.length >= 3)
+        .take(4)
+        .toList();
+
+    if (words.isEmpty) return _capitalizeFirst(category);
+
+    // 6. Capitalizar solo la primera letra del resultado
+    final result = words.join(' ');
+    return result.length < 3 ? _capitalizeFirst(category) : result;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -675,6 +794,12 @@ class IntentParser {
       'un': 1, 'uno': 1, 'una': 1, 'dos': 2, 'tres': 3,
       'cuatro': 4, 'cinco': 5, 'seis': 6, 'siete': 7,
       'ocho': 8, 'nueve': 9, 'diez': 10,
+      'once': 11, 'doce': 12, 'trece': 13, 'catorce': 14, 'quince': 15,
+      'dieciseis': 16, 'diecisiete': 17, 'dieciocho': 18, 'diecinueve': 19,
+      'veinte': 20, 'veintiuno': 21, 'veintidos': 22, 'veintitres': 23,
+      'veinticuatro': 24, 'veinticinco': 25,
+      'treinta': 30, 'cuarenta': 40, 'cincuenta': 50,
+      'sesenta': 60, 'setenta': 70, 'ochenta': 80, 'noventa': 90,
     };
     return map[w.toLowerCase()];
   }

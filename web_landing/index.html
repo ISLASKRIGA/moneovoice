@@ -46,7 +46,7 @@
                 <p>Gestiona tus finanzas simplemente hablando. La forma más rápida e inteligente de llevar un registro
                     de tus gastos, ingresos y ahorros.</p>
                 <div class="download-buttons">
-                    <a href="/installer.apk" class="download-btn android install-now-btn">
+                    <a href="/installer.apk" download="iMoney.apk" type="application/vnd.android.package-archive" class="download-btn android install-now-btn">
                         <i data-lucide="download-cloud"></i>
                         <div class="btn-text">
                             <span>INSTALAR</span>
@@ -124,7 +124,7 @@
             <p data-aos="fade-up" data-aos-delay="100">Descarga la aplicación oficial y toma el control total de tus
                 finanzas.</p>
             <div class="download-buttons center" data-aos="zoom-in" data-aos-delay="200">
-                <a href="/installer.apk" class="download-btn android install-now-btn">
+                <a href="/installer.apk" download="iMoney.apk" type="application/vnd.android.package-archive" class="download-btn android install-now-btn">
                     <i data-lucide="download-cloud"></i>
                     <div class="btn-text">
                         <span>INSTALAR</span>
@@ -157,22 +157,61 @@
         <div class="modal-content">
             <button class="close-modal">&times;</button>
             <h3 class="gradient-text">¡INICIANDO INSTALACIÓN!</h3>
-            <p>La descarga ha comenzado en tu navegador.</p>
-            <div class="steps-grid">
+            <p>La descarga ha comenzado. Sigue los pasos según tu móvil:</p>
+
+            <!-- Selector de dispositivo -->
+            <div class="device-tabs">
+                <button class="device-tab active" onclick="showTab('standard', this)">Android</button>
+                <button class="device-tab" onclick="showTab('samsung', this)">Samsung</button>
+                <button class="device-tab" onclick="showTab('xiaomi', this)">Xiaomi / Redmi</button>
+            </div>
+
+            <div id="tab-standard" class="steps-grid tab-content active">
                 <div class="step">
                     <span class="step-num">1</span>
-                    <p>En el aviso de Chrome, pulsa directamente en <strong>"ABRIR"</strong>.</p>
+                    <p>En la notificación de descarga, pulsa <strong>"ABRIR"</strong>.</p>
                 </div>
                 <div class="step">
                     <span class="step-num">2</span>
-                    <p>Si Android te pregunta, pulsa en <strong>"Ajustes"</strong> y permite instalar iMoney.</p>
+                    <p>Si aparece una advertencia, pulsa <strong>"Ajustes"</strong> y activa <strong>"Fuentes desconocidas"</strong> para el navegador.</p>
                 </div>
                 <div class="step">
                     <span class="step-num">3</span>
-                    <p>Dale a <strong>"Instalar"</strong> y el logo aparecerá en tu móvil.</p>
+                    <p>Pulsa <strong>"Instalar"</strong> y listo.</p>
                 </div>
             </div>
-            <button class="btn-primary close-modal-btn">¡TODO LISTO!</button>
+
+            <div id="tab-samsung" class="steps-grid tab-content" style="display:none;">
+                <div class="step">
+                    <span class="step-num">1</span>
+                    <p>Ve a <strong>Ajustes → Aplicaciones</strong>, busca tu navegador (Chrome o Samsung Internet) y pulsa en él.</p>
+                </div>
+                <div class="step">
+                    <span class="step-num">2</span>
+                    <p>Activa <strong>"Instalar apps desconocidas"</strong> para ese navegador.</p>
+                </div>
+                <div class="step">
+                    <span class="step-num">3</span>
+                    <p>Vuelve aquí, pulsa <strong>INSTALAR</strong> de nuevo y acepta la instalación. Si Play Protect pregunta, pulsa <strong>"Instalar igualmente"</strong>.</p>
+                </div>
+            </div>
+
+            <div id="tab-xiaomi" class="steps-grid tab-content" style="display:none;">
+                <div class="step">
+                    <span class="step-num">1</span>
+                    <p>Ve a <strong>Ajustes → Privacidad → Instalar apps de fuentes externas</strong>.</p>
+                </div>
+                <div class="step">
+                    <span class="step-num">2</span>
+                    <p>Activa el permiso para tu navegador (Chrome o Mi Browser).</p>
+                </div>
+                <div class="step">
+                    <span class="step-num">3</span>
+                    <p>Vuelve aquí y pulsa <strong>INSTALAR</strong>. Si MIUI Security pregunta, elige <strong>"Instalar de todos modos"</strong>.</p>
+                </div>
+            </div>
+
+            <button class="btn-primary close-modal-btn">¡ENTENDIDO!</button>
         </div>
     </div>
 

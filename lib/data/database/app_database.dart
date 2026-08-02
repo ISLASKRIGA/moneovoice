@@ -171,6 +171,13 @@ LazyDatabase _openConnection() {
   return LazyDatabase(() async {
     final dbFolder = await getApplicationDocumentsDirectory();
     final file = File(p.join(dbFolder.path, 'finance_app_v1.sqlite'));
-    return NativeDatabase(file);
+    return NativeDatabase(
+      file,
+      // Habilitar WAL (Write-Ahead Logging) para mejor rendimiento de concurrencia
+      setup: (database) {
+        database.execute('PRAGMA journal_mode=WAL;');
+        database.execute('PRAGMA synchronous=NORMAL;');
+      },
+    );
   });
 }

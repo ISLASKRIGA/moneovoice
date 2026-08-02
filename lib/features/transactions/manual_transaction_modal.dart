@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:drift/drift.dart' as drift;
 import '../../data/database/app_database.dart';
 import '../../core/di/dependency_injection.dart';
 import '../../data/repositories/transaction_repository.dart';
 import '../categories/category_provider.dart';
 import '../categories/category_picker_modal.dart';
 import '../lists/lists_provider.dart';
+import '../../core/utils/top_notification.dart';
+import '../recurring/recurring_provider.dart';
+import '../premium/premium_paywall.dart';
 
 class ManualTransactionModal extends ConsumerStatefulWidget {
   final Transaction? transaction;
@@ -20,23 +24,39 @@ class _ManualTransactionModalState extends ConsumerState<ManualTransactionModal>
   final _descriptionController = TextEditingController();
   final _amountController = TextEditingController();
   final _tagController = TextEditingController();
+  final List<String> _tags = [];
   
   String _selectedCategory = 'Comida'; // Default
   DateTime _selectedDate = DateTime.now();
   bool _isIncome = false;
+  String _selectedFrequency = 'once'; // 'once' | 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'bimonthly' | 'quarterly' | 'annually'
+
+  static const _frequencies = [
+    ('once',       'Una vez'),
+    ('daily',      'Diariamente'),
+    ('weekly',     'Semanalmente'),
+    ('biweekly',   'Quincenalmente'),
+    ('monthly',    'Mensualmente'),
+    ('bimonthly',  'Bimensualmente'),
+    ('quarterly',  'Trimestralmente'),
+    ('annually',   'Anualmente'),
+  ];
   
   @override
   void initState() {
     super.initState();
     if (widget.transaction != null) {
       final desc = widget.transaction!.description;
-      final tagMatch = RegExp(r'(.*)\s+#([^\s]+)$').firstMatch(desc);
-      if (tagMatch != null) {
-        _descriptionController.text = tagMatch.group(1) ?? '';
-        _tagController.text = tagMatch.group(2) ?? '';
-      } else {
-        _descriptionController.text = desc;
+      final descParts = desc.split(' ');
+      List<String> validWords = [];
+      for (var word in descParts) {
+        if (word.startsWith('#') && word.length > 1) {
+          _tags.add(word.substring(1));
+        } else {
+          validWords.add(word);
+        }
       }
+      _descriptionController.text = validWords.join(' ').trim();
 
       _amountController.text = widget.transaction!.amount.toString();
       _selectedCategory = widget.transaction?.categoryName ?? 'Comida';
@@ -55,28 +75,56 @@ class _ManualTransactionModalState extends ConsumerState<ManualTransactionModal>
 
   void _saveTransaction() async {
     final rawDescription = _descriptionController.text.trim();
-    final rawTag = _tagController.text.trim().replaceAll('#', '');
-    final description = rawTag.isNotEmpty ? '$rawDescription #$rawTag' : rawDescription;
-    final amountText = _amountController.text.trim();
     
+    // Si dejaron algo escrito sin dar espacio, lo agregamos a tags
+    if (_tagController.text.trim().isNotEmpty) {
+      _tags.add(_tagController.text.trim().replaceAll('#', ''));
+    }
+
+    String finalTagsStr = _tags.map((t) => '#$t').join(' ');
+    final description = finalTagsStr.isNotEmpty ? '$rawDescription $finalTagsStr'.trim() : rawDescription;
+    final amountText = _amountController.text.trim();
+
     if (description.isEmpty || amountText.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ingresa descripción y monto')));
+      _showSnackBar('Ingresa descripción y monto');
       return;
     }
 
     final amount = double.tryParse(amountText);
     if (amount == null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Monto inválido')));
+      _showSnackBar('Monto inválido');
       return;
     }
 
-    // Lista activa (null = Lista Privada)
+    // Lista activa (null = Lista por defecto)
     final activeList = ref.read(activeListProvider);
     final listId = activeList?.id;
 
     final repo = ref.read(transactionRepositoryProvider);
+    final db   = ref.read(databaseProvider);
+    final isUpdate = widget.transaction != null;
+
+    // ── Verificar límite freemium ──────────────────────────────
+    if (!isUpdate) {
+      final isPremium = ref.read(premiumProvider);
+      if (!isPremium) {
+        final count = await repo.getTransactionCount();
+        if (count >= kFreeTransactionLimit) {
+          if (mounted) await showPremiumPaywall(context);
+          return;
+        }
+      }
+    }
+
     try {
-      if (widget.transaction != null) {
+      showTopNotification(
+        context, 
+        isUpdate ? 'Transacción actualizada' : 'Transacción guardada',
+        delay: const Duration(milliseconds: 300),
+      );
+      Navigator.pop(context);
+
+      if (isUpdate) {
         await repo.updateTransaction(
           id: widget.transaction!.id,
           amount: amount,
@@ -96,10 +144,39 @@ class _ManualTransactionModalState extends ConsumerState<ManualTransactionModal>
           listId: listId,
         );
       }
-      if (mounted) Navigator.pop(context);
+
+      // Si es recurrente, también registramos en la tabla de recurrentes
+      if (_selectedFrequency != 'once') {
+        int dayOfPeriod = _selectedDate.day;
+        if (_selectedFrequency == 'weekly') {
+          dayOfPeriod = _selectedDate.weekday;
+        } else if (_selectedFrequency == 'daily') {
+          dayOfPeriod = 0;
+        }
+
+        await ref.read(recurringNotifierProvider.notifier).add(
+          amount: amount,
+          description: description,
+          categoryName: _selectedCategory,
+          isIncome: _isIncome,
+          frequency: _selectedFrequency,
+          dayOfPeriod: dayOfPeriod,
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error al guardar: $e')));
+      debugPrint('Error al guardar: \$e');
     }
+  }
+
+  void _showSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: Colors.red,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
   }
 
   @override
@@ -136,7 +213,7 @@ class _ManualTransactionModalState extends ConsumerState<ManualTransactionModal>
                       }
                     ),
                     SizedBox(width: 8),
-                    _buildPillDropdown(label: 'Una vez', onTap: () {}), // Frequency placeholder
+                    _buildFrequencyPill(),
                   ],
                 ),
                 // Close button
@@ -180,7 +257,12 @@ class _ManualTransactionModalState extends ConsumerState<ManualTransactionModal>
                         child: Row(
                           children: [
                             GestureDetector(
-                              onTap: () => setState(() => _isIncome = false),
+                              onTap: () => setState(() {
+                                _isIncome = false;
+                                if (_selectedCategory == 'Ingresos') {
+                                  _selectedCategory = 'Comida'; // Go back to a common expense category
+                                }
+                              }),
                               child: AnimatedContainer(
                                 duration: Duration(milliseconds: 200),
                                 padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -192,7 +274,10 @@ class _ManualTransactionModalState extends ConsumerState<ManualTransactionModal>
                               ),
                             ),
                             GestureDetector(
-                              onTap: () => setState(() => _isIncome = true),
+                              onTap: () => setState(() {
+                                _isIncome = true;
+                                _selectedCategory = 'Ingresos';
+                              }),
                               child: AnimatedContainer(
                                 duration: Duration(milliseconds: 200),
                                 padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -307,21 +392,76 @@ class _ManualTransactionModalState extends ConsumerState<ManualTransactionModal>
                       Expanded(
                         child: Container(
                           height: 60,
-                          padding: EdgeInsets.symmetric(horizontal: 20),
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
                           decoration: BoxDecoration(
-                            color: Colors.grey[200], // Light grey background
+                            color: Colors.grey[200],
                             borderRadius: BorderRadius.circular(16),
                           ),
                           alignment: Alignment.centerLeft,
-                          child: TextField(
-                            controller: _tagController,
-                            decoration: InputDecoration(
-                              hintText: '#Etiqueta',
-                              hintStyle: TextStyle(color: Colors.black38, fontWeight: FontWeight.normal),
-                              border: InputBorder.none,
-                              isDense: true,
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            physics: const BouncingScrollPhysics(),
+                            child: Row(
+                              children: [
+                                ..._tags.map((tag) => Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black,
+                                      borderRadius: BorderRadius.circular(12)
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text('#$tag', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+                                        const SizedBox(width: 4),
+                                        GestureDetector(
+                                          onTap: () => setState(() => _tags.remove(tag)),
+                                          child: const Icon(Icons.close, size: 16, color: Colors.white70)
+                                        )
+                                      ]
+                                    )
+                                  ),
+                                )),
+                                SizedBox(
+                                  width: 120, // Ancho fijo para escribir
+                                  child: TextField(
+                                    controller: _tagController,
+                                    textInputAction: TextInputAction.done,
+                                    onChanged: (val) {
+                                      if (val.endsWith(' ')) {
+                                        final newTag = val.trim().replaceAll('#', '');
+                                        if (newTag.isNotEmpty) {
+                                          setState(() {
+                                            _tags.add(newTag);
+                                            _tagController.clear();
+                                          });
+                                        } else {
+                                          _tagController.clear();
+                                        }
+                                      }
+                                    },
+                                    onSubmitted: (val) {
+                                      final newTag = val.trim().replaceAll('#', '');
+                                      if (newTag.isNotEmpty) {
+                                        setState(() {
+                                          _tags.add(newTag);
+                                          _tagController.clear();
+                                        });
+                                      }
+                                    },
+                                    decoration: const InputDecoration(
+                                      hintText: '#Etiqueta',
+                                      hintStyle: TextStyle(color: Colors.black38, fontWeight: FontWeight.normal),
+                                      border: InputBorder.none,
+                                      isDense: true,
+                                    ),
+                                    style: const TextStyle(fontSize: 16),
+                                  ),
+                                ),
+                              ],
                             ),
-                            style: TextStyle(fontSize: 16),
                           ),
                         ),
                       ),
@@ -402,6 +542,71 @@ class _ManualTransactionModalState extends ConsumerState<ManualTransactionModal>
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildFrequencyPill() {
+    final selectedLabel = _frequencies.firstWhere((f) => f.$1 == _selectedFrequency).$2;
+    final isRecurring = _selectedFrequency != 'once';
+
+    return PopupMenuButton<String>(
+      onSelected: (value) => setState(() => _selectedFrequency = value),
+      offset: const Offset(0, 36),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      color: Colors.white,
+      elevation: 8,
+      itemBuilder: (context) => _frequencies.map((f) {
+        final isSelected = f.$1 == _selectedFrequency;
+        return PopupMenuItem<String>(
+          value: f.$1,
+          child: Row(
+            children: [
+              SizedBox(width: 4),
+              Icon(
+                isSelected ? Icons.check : null,
+                size: 16,
+                color: Colors.black87,
+              ),
+              SizedBox(width: isSelected ? 8 : 24),
+              Text(
+                f.$2,
+                style: TextStyle(
+                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                  color: Colors.black87,
+                  fontSize: 15,
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: isRecurring ? Colors.black : Colors.grey[100],
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            if (isRecurring)
+              Padding(
+                padding: const EdgeInsets.only(right: 5),
+                child: Icon(Icons.repeat, size: 13, color: Colors.white),
+              ),
+            Text(
+              selectedLabel,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+                color: isRecurring ? Colors.white : Colors.black87,
+              ),
+            ),
+            SizedBox(width: 4),
+            Icon(Icons.keyboard_arrow_down, size: 16,
+                color: isRecurring ? Colors.white : Colors.black87),
+          ],
+        ),
       ),
     );
   }

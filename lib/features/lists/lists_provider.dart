@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:drift/drift.dart' hide Transaction;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:collection/collection.dart';
 import '../../core/di/dependency_injection.dart';
 import '../../data/database/app_database.dart';
 
@@ -10,7 +11,51 @@ final userListsProvider = StreamProvider<List<UserList>>((ref) {
   return db.watchUserLists();
 });
 
-// ── Lista activa (null = "Lista Privada" por defecto) ────────
+// ── Propiedades de la Lista 1 (Lista por defecto) ──────────
+class DefaultListSettings {
+  final String name;
+  final String emoji;
+  final bool isDeleted;
+  DefaultListSettings({required this.name, required this.emoji, this.isDeleted = false});
+}
+
+class DefaultListNotifier extends StateNotifier<DefaultListSettings> {
+  final SharedPreferences _prefs;
+  static const _nameKey = 'default_list_name';
+  static const _emojiKey = 'default_list_emoji';
+  static const _deletedKey = 'default_list_deleted';
+
+  DefaultListNotifier(this._prefs)
+      : super(DefaultListSettings(
+          name: _prefs.getString(_nameKey) ?? 'Lista 1',
+          emoji: _prefs.getString(_emojiKey) ?? '⭐',
+          isDeleted: _prefs.getBool(_deletedKey) ?? false,
+        ));
+
+  Future<void> update(String name, String emoji) async {
+    await _prefs.setString(_nameKey, name);
+    await _prefs.setString(_emojiKey, emoji);
+    state = DefaultListSettings(name: name, emoji: emoji, isDeleted: state.isDeleted);
+  }
+
+  Future<void> delete() async {
+    await _prefs.setBool(_deletedKey, true);
+    state = DefaultListSettings(name: state.name, emoji: state.emoji, isDeleted: true);
+  }
+
+  Future<void> restore() async {
+    await _prefs.setBool(_deletedKey, false);
+    state = DefaultListSettings(name: state.name, emoji: state.emoji, isDeleted: false);
+  }
+}
+
+final defaultListProvider =
+    StateNotifierProvider<DefaultListNotifier, DefaultListSettings>((ref) {
+  final prefs = ref.watch(sharedPreferencesProvider);
+  return DefaultListNotifier(prefs);
+});
+
+// ── Lista activa (null = "Lista 1" por defecto) ────────
 class ActiveListNotifier extends StateNotifier<UserList?> {
   final SharedPreferences _prefs;
   final AppDatabase _db;
@@ -22,13 +67,11 @@ class ActiveListNotifier extends StateNotifier<UserList?> {
 
   Future<void> _restore() async {
     final savedId = _prefs.getInt(_key);
-    if (savedId != null) {
-      final lists = await _db.getAllUserLists();
-      final match = lists.where((l) => l.id == savedId).toList();
-      if (match.isNotEmpty) {
-        state = match.first;
-      }
-    }
+    if (savedId == null) return;
+
+    final lists = await _db.getAllUserLists();
+    // firstWhereOrNull devuelve null si no hay coincidencia (lista fue borrada)
+    state = lists.firstWhereOrNull((l) => l.id == savedId);
   }
 
   void select(UserList? list) {
@@ -76,11 +119,11 @@ class ListsNotifier extends StateNotifier<AsyncValue<List<UserList>>> {
     await _load();
   }
 
-  Future<void> rename(UserList list, String newName) async {
+  Future<void> rename(UserList list, String newName, {String? emoji}) async {
     await _db.updateUserList(UserListsCompanion(
       id: Value(list.id),
       name: Value(newName),
-      emoji: Value(list.emoji),
+      emoji: Value(emoji ?? list.emoji),
     ));
     await _load();
   }
@@ -89,7 +132,14 @@ class ListsNotifier extends StateNotifier<AsyncValue<List<UserList>>> {
     await _db.deleteUserList(id);
     // Si era la lista activa, la limpiamos
     _ref.read(activeListProvider.notifier).clearIfDeleted(id);
-    await _load();
+    final lists = await _db.getAllUserLists();
+    
+    // Si ya no quedan listas de usuario, restauramos la Lista 1 por defecto
+    if (lists.isEmpty) {
+      await _ref.read(defaultListProvider.notifier).restore();
+    }
+    
+    state = AsyncValue.data(lists);
   }
 }
 

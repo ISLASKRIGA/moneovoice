@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "752481843793",
+    "project_id": "moneovoice-5dd85",
+    "storage_bucket": "moneovoice-5dd85.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:752481843793:android:30f75628443584ed70d670",
+        "android_client_info": {
+          "package_name": "com.moneovoice.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBNxylfPR71Rshp8NMSZRnD68WQaMAZiGc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,7 +1,7 @@
-name: prueba
-description: "A new Flutter project for Voice Finance App"
+name: moneovoice
+description: "MoneoVoice - Voice Finance App"
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.9+10
 
 environment:
   sdk: ^3.6.0
@@ -14,9 +14,8 @@ dependencies:
   # Stack Requirement: State Management
   flutter_riverpod: ^2.6.1
   
-  # Stack Requirement: Voice
-  speech_to_text: ^7.0.0
   permission_handler: ^11.3.1
+  speech_to_text: ^6.6.1
   
   # Stack Requirement: Persistence (Drift)
   drift: ^2.24.2
@@ -35,17 +34,48 @@ dependencies:
   logger: ^2.5.0
   shared_preferences: ^2.5.3
   excel: ^4.0.6
+  syncfusion_flutter_xlsio: ^29.1.38
   share_plus: ^12.0.1
   dotted_border: ^2.1.0
+  collection: ^1.18.0
+  pdf: ^3.11.3
+  printing: ^5.14.3
+
+  # Firebase
+  firebase_core: ^3.13.0
+  firebase_crashlytics: ^4.3.0
+  firebase_remote_config: ^5.4.0
+
+  # Version check
+  package_info_plus: ^8.1.3
+  url_launcher: ^6.3.1
+  flutter_notification_listener: ^1.4.0
+  in_app_purchase: ^3.2.3
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
-  
+
   # Code Gen for Drift
   drift_dev: ^2.24.2
   build_runner: ^2.4.14
 
+  # App icon generator
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#ffffff"
+  adaptive_icon_foreground: "assets/icon.png"
+
 flutter:
   uses-material-design: true
+
+  assets:
+    - assets/
+
+

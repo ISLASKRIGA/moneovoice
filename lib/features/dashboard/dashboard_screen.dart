@@ -1,24 +1,34 @@
-﻿import 'package:flutter/material.dart';
+import 'dart:async';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+
 import '../../core/di/dependency_injection.dart';
+import '../premium/premium_paywall.dart';
+import '../premium/premium_provider.dart';
 import '../../core/utils/category_utils.dart';
 import '../../data/database/app_database.dart';
-import '../transactions/manual_transaction_modal.dart';
-import '../../widgets/transaction_list.dart';
-import '../settings/settings_modal.dart';
-import '../settings/settings_provider.dart';
-import '../categories/category_provider.dart';
-import '../lists/lists_provider.dart';
-import '../lists/user_lists_modal.dart';
 import '../../nlp/intent_parser.dart';
 import '../../nlp/smart_category_matcher.dart';
 import '../../voice/voice_service.dart';
+import '../../widgets/transaction_list.dart';
+import '../categories/category_editor_modal.dart';
+import '../categories/category_provider.dart';
+import '../lists/lists_provider.dart';
+import '../lists/user_lists_modal.dart';
+import '../settings/settings_modal.dart';
+import '../settings/settings_provider.dart';
+import '../transactions/manual_transaction_modal.dart';
 import 'month_picker_modal.dart';
+import 'utils/dashboard_animations.dart';
+import 'widgets/balance_header.dart';
+import 'widgets/category_bar_chart.dart';
+import 'widgets/mic_button.dart';
+import '../../core/utils/top_notification.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
-  const DashboardScreen({Key? key}) : super(key: key);
+  const DashboardScreen({super.key});
 
   @override
   ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
@@ -28,26 +38,46 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     with TickerProviderStateMixin {
   final ScrollController _scrollController = ScrollController();
   final ValueNotifier<double> _scrollOffset = ValueNotifier<double>(0.0);
+  
+  // Filtros
   String? _selectedCategoryFilter;
   int? _selectedTypeFilter; // 0 = Egresos, 1 = Ingresos
-  DateTime? _selectedMonthFilter = DateTime.now(); // Default to current month
+  DateTime? _selectedMonthFilter = DateTime.now();
 
+  // Búsqueda
   bool _isSearching = false;
   bool _isSearchExpanded = false;
   bool _showCloseIcon = false;
-  static const double _firstTransactionScrollOffset = 320.0;
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
   String _searchQuery = '';
+  static const double _firstTransactionScrollOffset = 320.0;
 
-  // â”€â”€ Settings modal animation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  late final _CurvedAnimController _settingsAnimController;
+  // Animaciones
+  late final CurvedAnimController _settingsAnimController;
+  late final AnimationController _entranceController;
+  late final Animation<double> _headerFade;
+  late final Animation<Offset> _chartSlide;
+  late final Animation<double> _chartFade;
+  late final Animation<double> _pillsFade;
+  late final Animation<Offset> _pillLeftSlide;
+  late final Animation<Offset> _pillRightSlide;
+  late final Animation<double> _listFade;
+  late final AnimationController _chartEntranceController;
+  bool _hasAnimated = false;
 
-  // â”€â”€ Inline voice state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  bool _isVoiceActive = false;      // mic pressed â†’ pill is forming
-  bool _isVoicePillOpen = false;    // pill fully open, transcript visible
+  // Voz (Inline)
+  bool _isVoiceActive = false;
+  bool _isVoicePillOpen = false;
+  bool _isMicListening = false;     // true solo cuando el motor STT capta audio
+  double? _micDragStartY;
+  bool _micDragTriggered = false;
   String _voiceTranscript = '';
+  String _fullTranscript = '';
   FinanceIntent? _voiceIntent;
+  StreamSubscription<VoiceAIResult>? _aiResultSub;
+  StreamSubscription<VoiceStatus>?  _voiceStatusSub;
+  late final AnimationController _micPulseCtrl;
 
   @override
   void initState() {
@@ -55,114 +85,228 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     _scrollController.addListener(() {
       _scrollOffset.value = _scrollController.offset;
     });
-    _settingsAnimController = _CurvedAnimController(
+
+    _settingsAnimController = CurvedAnimController(
       vsync: this,
       duration: const Duration(milliseconds: 720),
       reverseDuration: const Duration(milliseconds: 480),
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
     );
+
+    _entranceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 950),
+    );
+
+    _headerFade = CurvedAnimation(
+      parent: _entranceController,
+      curve: const Interval(0.0, 0.5, curve: Curves.easeOut),
+    );
+    _chartFade = CurvedAnimation(
+      parent: _entranceController,
+      curve: const Interval(0.1, 0.65, curve: Curves.easeOut),
+    );
+    _chartSlide = Tween<Offset>(
+      begin: const Offset(0, 0.25),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _entranceController,
+      curve: const Interval(0.1, 0.65, curve: Curves.easeOutCubic),
+    ));
+    _pillsFade = CurvedAnimation(
+      parent: _entranceController,
+      curve: const Interval(0.35, 0.8, curve: Curves.easeOut),
+    );
+    _pillLeftSlide = Tween<Offset>(
+      begin: const Offset(-1.5, 0),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _entranceController,
+      curve: const Interval(0.35, 0.8, curve: Curves.easeOutCubic),
+    ));
+    _pillRightSlide = Tween<Offset>(
+      begin: const Offset(1.5, 0),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(
+      parent: _entranceController,
+      curve: const Interval(0.35, 0.8, curve: Curves.easeOutCubic),
+    ));
+    _listFade = CurvedAnimation(
+      parent: _entranceController,
+      curve: const Interval(0.5, 1.0, curve: Curves.easeOut),
+    );
+
+    _chartEntranceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    );
+
+    // Pulso del micrófono: animación continua sincronizada con el motor STT
+    _micPulseCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+
+    // Suscribirse al estado real del motor STT
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _voiceStatusSub = ref.read(voiceServiceProvider).statusStream.listen((status) {
+        if (!mounted) return;
+        final isNowListening = status == VoiceStatus.listening;
+        if (_isMicListening != isNowListening) {
+          setState(() => _isMicListening = isNowListening);
+          if (isNowListening) {
+            _micPulseCtrl.repeat(reverse: true);
+          } else {
+            _micPulseCtrl.animateTo(0, duration: const Duration(milliseconds: 300));
+          }
+        }
+      });
+    });
   }
 
   @override
   void dispose() {
+    _voiceStatusSub?.cancel();
+    _aiResultSub?.cancel();
+    _micPulseCtrl.dispose();
     _scrollController.dispose();
     _scrollOffset.dispose();
     _searchController.dispose();
     _searchFocusNode.dispose();
     _settingsAnimController.dispose();
+    _entranceController.dispose();
+    _chartEntranceController.dispose();
     super.dispose();
   }
 
-  // â”€â”€ Inline voice â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─────────────────────────────────────────────────────────────
+  // Lógica de Voz
+  // ─────────────────────────────────────────────────────────────
   void _startVoiceInline() {
+    if (_isVoiceActive) return;
     final svc = ref.read(voiceServiceProvider);
-    
-    // Si estaba buscando, lo cerramos rÃ¡pido
+
     if (_isSearching) {
       _isSearching = false;
       _isSearchExpanded = false;
       _searchController.clear();
       _searchFocusNode.unfocus();
     }
-    
-    // FASE 1: mic se achica a cÃ­rculo (igual que la lupa al colapsar)
+
+    // Mostrar el bubble inmediatamente para que el transcript aparezca en tiempo real
     setState(() {
       _isVoiceActive = true;
+      _isVoicePillOpen = true;
       _voiceTranscript = '';
+      _fullTranscript = '';
       _voiceIntent = null;
-      _isVoicePillOpen = false;
     });
 
-    // FASE 2: despuÃ©s de 700ms (colapso terminado) â†’ expandir hacia izquierda
-    Future.delayed(const Duration(milliseconds: 700), () {
-      if (mounted && _isVoiceActive) {
-        setState(() => _isVoicePillOpen = true);
-        // La burbuja de texto aparece una vez que terminÃ³ la expansiÃ³n (~900ms)
-      }
-    });
-
-    svc.partialTextStream.listen((text) {
+    _aiResultSub?.cancel();
+    _aiResultSub = svc.aiResultStream.listen((aiResult) {
       if (!mounted || !_isVoiceActive) return;
+
       setState(() {
-        _voiceTranscript = text;
-        final intent = ref.read(intentParserProvider).parse(text);
-        if (intent.action != IntentAction.unknown) _voiceIntent = intent;
+        if (aiResult.isFinal && aiResult.text.isNotEmpty) {
+          // Resultado final: acumular en el historial del transcript
+          _fullTranscript = (_fullTranscript.isEmpty
+                  ? aiResult.text
+                  : '$_fullTranscript ${aiResult.text}')
+              .trim();
+          _voiceTranscript = _fullTranscript;
+        } else if (!aiResult.isFinal && aiResult.text.isNotEmpty) {
+          // Parcial: mostrar en tiempo real combinando historial + parcial actual
+          _voiceTranscript = _fullTranscript.isEmpty
+              ? aiResult.text
+              : '$_fullTranscript ${aiResult.text}';
+        }
+
+        if (_voiceTranscript.length >= 3) {
+          final intent = ref.read(intentParserProvider).parse(_voiceTranscript);
+          if (intent.action != IntentAction.unknown) _voiceIntent = intent;
+        }
       });
     });
 
-    svc.statusStream.listen((status) {
-      if (!mounted) return;
-      if (status == VoiceStatus.idle && _voiceIntent == null) {
-        _stopVoiceInline();
-      }
-    });
     svc.startListening();
   }
 
   void _stopVoiceInline() {
+    if (!_isVoiceActive) return;
+    _aiResultSub?.cancel();
+    _aiResultSub = null;
     ref.read(voiceServiceProvider).stopListening();
-    setState(() => _isVoicePillOpen = false);
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (mounted) {
-        setState(() {
-          _isVoiceActive = false;
-          _voiceTranscript = '';
-          _voiceIntent = null;
-        });
-      }
+    setState(() {
+      _isVoiceActive = false;
+      _isVoicePillOpen = false;
+      _voiceTranscript = '';
+      _fullTranscript = '';
+      _voiceIntent = null;
     });
   }
 
-  Future<void> _confirmVoice() async {
+  // Limpia el transcript sin detener el mic (para después de confirmar)
+  void _clearVoiceState() {
+    setState(() {
+      _voiceTranscript = '';
+      _fullTranscript = '';
+      _voiceIntent = null;
+    });
+  }
+
+  void _confirmVoice() {
     if (_voiceIntent == null) return;
-    final repo   = ref.read(transactionRepositoryProvider);
-    final intent = _voiceIntent!;
+    final repo       = ref.read(transactionRepositoryProvider);
+    final intent     = _voiceIntent!;
+    final transcript = _voiceTranscript;
+    
+    // Detener el micrófono inmediatamente
     _stopVoiceInline();
 
-    // Resolver categorÃ­a real del usuario con SmartCategoryMatcher
-    final matcher      = ref.read(smartCategoryMatcherProvider);
-    final normalizedTx = (_voiceTranscript)
-        .toLowerCase()
-        .replaceAll('Ã¡','a').replaceAll('Ã©','e').replaceAll('Ã­','i')
-        .replaceAll('Ã³','o').replaceAll('Ãº','u');
-    final resolvedCat  = matcher.match(normalizedTx, intent.category);
-    final catName      = resolvedCat?.name ?? intent.category ?? (intent.action == IntentAction.create_income ? 'Ingresos' : 'General');
+    final matcher     = ref.read(smartCategoryMatcherProvider);
+    
+    // Usar el texto ya limpiado (sin fechas, ni etiquetas, ni montos) para que el categorizador sea sumamente preciso
+    final cleanTextForMatcher = (intent.description != null && intent.description!.isNotEmpty) 
+        ? intent.description!.toLowerCase() 
+        : transcript.toLowerCase();
+        
+    final resolvedCat = matcher.match(cleanTextForMatcher, intent.category);
+    final catName = (intent.action == IntentAction.create_income)
+        ? 'Ingresos'
+        : (resolvedCat?.name ?? intent.category ?? 'General');
 
     try {
-      await repo.addTransaction(
-        amount:      intent.amount ?? 0,
-        category:    catName,
-        description: intent.description ?? (intent.action == IntentAction.create_income ? 'Ingreso' : 'Gasto'),
-        date:        intent.date ?? DateTime.now(),
-        isIncome:    intent.action == IntentAction.create_income,
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('âœ… ${resolvedCat?.emoji ?? ''} Guardado en $catName'),
-          backgroundColor: Colors.green[700],
-          behavior: SnackBarBehavior.floating,
-        ));
+      if (intent.isMultiItem) {
+        final activeList = ref.read(activeListProvider);
+        final listId = activeList?.id;
+
+        for (final item in intent.lineItems) {
+          final itemCat = (intent.action == IntentAction.create_income)
+              ? 'Ingresos'
+              : (matcher.match(item.description.toLowerCase(), item.category)?.name ?? item.category);
+          repo.addTransaction(
+            amount:      item.amount,
+            category:    itemCat,
+            description: item.description,
+            date:        intent.date ?? DateTime.now(),
+            isIncome:    intent.action == IntentAction.create_income,
+            listId:      listId,
+          );
+        }
+        showTopNotification(context, 'Guardadas ${intent.lineItems.length} transacciones');
+      } else {
+        final activeList = ref.read(activeListProvider);
+        final listId = activeList?.id;
+
+        repo.addTransaction(
+          amount:      intent.amount ?? 0,
+          category:    catName,
+          description: intent.description ??
+              (intent.action == IntentAction.create_income ? 'Ingreso' : 'Gasto'),
+          date:        intent.date ?? DateTime.now(),
+          isIncome:    intent.action == IntentAction.create_income,
+          listId:      listId,
+        );
+        showTopNotification(context, 'Guardado en $catName');
       }
     } catch (e) {
       if (mounted) {
@@ -176,277 +320,202 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
   @override
   Widget build(BuildContext context) {
     final transactionRepository = ref.watch(transactionRepositoryProvider);
-    // Lista activa: null = Lista Privada, int = lista del usuario
     final activeList = ref.watch(activeListProvider);
-    final activeListId = activeList?.id; // null -> Lista Privada
+    final activeListId = activeList?.id;
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bgColor = isDark ? const Color(0xFF000000) : const Color(0xFFF6F6F9);
+    final surfaceColor = isDark ? const Color(0xFF1C1C1E) : Colors.white;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF6F6F9),
+      backgroundColor: bgColor,
       resizeToAvoidBottomInset: true,
       body: AnnotatedRegion<SystemUiOverlayStyle>(
-        value: SystemUiOverlayStyle.dark.copyWith(
+        value: (isDark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark).copyWith(
           statusBarColor: Colors.transparent,
-          systemNavigationBarColor: const Color(0xFFF6F6F9),
+          systemNavigationBarColor: bgColor,
         ),
-        // â”€â”€ Stream filtrado por lista activa â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         child: StreamBuilder<List<Transaction>>(
-          // Cuando activeList cambia, el stream se reconstruye automÃ¡ticamente
           stream: transactionRepository.watchTransactionsByList(activeListId),
           builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
+            if (!snapshot.hasData) return const SizedBox.shrink();
 
-          final data = snapshot.data!;
-          final settings = ref.watch(settingsProvider);
-          
-          Iterable<Transaction> filteredData = data;
-          if (_selectedMonthFilter != null) {
-            filteredData = data.where((t) => t.date.year == _selectedMonthFilter!.year && t.date.month == _selectedMonthFilter!.month);
-          }
+            if (!_hasAnimated) {
+              _hasAnimated = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  _entranceController.forward();
+                  Future.delayed(const Duration(milliseconds: 250), () {
+                    if (mounted) _chartEntranceController.forward();
+                  });
+                }
+              });
+            }
 
-          if (_searchQuery.isNotEmpty) {
-            final q = _searchQuery.toLowerCase();
-            filteredData = filteredData.where((t) => 
-              t.description.toLowerCase().contains(q) || 
-              (t.categoryName ?? '').toLowerCase().contains(q)
-            );
-          }
+            final data = snapshot.data!;
+            final settings = ref.watch(settingsProvider);
+            
+            // Filtrado de Datos
+            Iterable<Transaction> filteredData = data;
+            if (_selectedMonthFilter != null) {
+              filteredData = data.where((t) => t.date.year == _selectedMonthFilter!.year && t.date.month == _selectedMonthFilter!.month);
+            }
 
-          final displayData = filteredData.toList();
-          
-          Iterable<Transaction> tempFiltered = displayData;
-          if (_selectedCategoryFilter != null) {
-            tempFiltered = tempFiltered.where((t) => (t.categoryName ?? 'Otros').trim() == _selectedCategoryFilter);
-          }
-          if (_selectedTypeFilter != null) {
-            tempFiltered = tempFiltered.where((t) => t.type == _selectedTypeFilter);
-          }
-          final listData = tempFiltered.toList();
+            if (_searchQuery.isNotEmpty) {
+              final q = _searchQuery.toLowerCase();
+              filteredData = filteredData.where((t) => 
+                t.description.toLowerCase().contains(q) || 
+                (t.categoryName ?? '').toLowerCase().contains(q)
+              );
+            }
 
-          // ── Balance del header ─────────────────────────────────
-          // • Acumulado ON  → suma todos los meses (data completo)
-          // • Acumulado OFF → solo el mes seleccionado (displayData)
-          final headerSource = settings.accumulated ? data : displayData;
+            final displayData = filteredData.toList();
+            
+            Iterable<Transaction> tempFiltered = displayData;
+            if (_selectedCategoryFilter != null) {
+              tempFiltered = tempFiltered.where((t) => (t.categoryName ?? 'Otros').trim() == _selectedCategoryFilter);
+            }
+            if (_selectedTypeFilter != null) {
+              tempFiltered = tempFiltered.where((t) => t.type == _selectedTypeFilter);
+            }
+            final listData = tempFiltered.toList();
 
-          final totalIncome = headerSource
-              .where((t) => t.type == 1)
-              .fold(0.0, (sum, t) => sum + t.amount);
-          final totalExpense = headerSource
-              .where((t) => t.type == 0)
-              .fold(0.0, (sum, t) => sum + t.amount);
+            final headerSource = settings.accumulated ? data : displayData;
+            final totalIncome = headerSource.where((t) => t.type == 1).fold(0.0, (sum, t) => sum + t.amount);
+            final totalExpense = headerSource.where((t) => t.type == 0).fold(0.0, (sum, t) => sum + t.amount);
+            final balance = totalIncome - totalExpense;
 
-          final balance = totalIncome - totalExpense;
-
-          return CustomScrollView(
-            controller: _scrollController,
-            physics: const BouncingScrollPhysics(),
-            slivers: [
-              // â”€â”€ Header fijo (balance + configuraciÃ³n) â”€â”€
-              SliverPersistentHeader(
-                pinned: true,
-                delegate: _BalanceHeaderDelegate(
-                  balance: balance,
-                  totalIncome: totalIncome,
-                  totalExpense: totalExpense,
-                  onSettingsPressed: () => _showSettings(context),
-                  topPadding: MediaQuery.of(context).padding.top,
-                  showIncome: settings.showIncome,
-                  accumulated: settings.accumulated,
-                  selectedTypeFilter: _selectedTypeFilter,
-                  onTypeFilterChanged: (type) {
-                    setState(() {
-                      if (_selectedTypeFilter == type) {
-                        _selectedTypeFilter = null;
-                      } else {
-                        _selectedTypeFilter = type;
-                        _selectedCategoryFilter = null; // Quitar filtro de categoría al filtrar por tipo
-                      }
-                    });
-                  },
-                ),
-              ),
-
-              // â”€â”€ GrÃ¡fica de barras â”€â”€
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
-                  child: SizedBox(
-                    height: 260,
-                    child: _buildBarChart(displayData, ref.watch(categoryProvider)),
+            return CustomScrollView(
+              controller: _scrollController,
+              physics: const BouncingScrollPhysics(),
+              slivers: [
+                // ── Header fijo con Balance ──
+                SliverFadeTransition(
+                  opacity: _headerFade,
+                  sliver: SliverPersistentHeader(
+                    pinned: true,
+                    delegate: BalanceHeaderDelegate(
+                      balance: balance,
+                      totalIncome: totalIncome,
+                      totalExpense: totalExpense,
+                      onSettingsPressed: () => _showSettings(context),
+                      topPadding: MediaQuery.of(context).padding.top,
+                      showIncome: settings.showIncome,
+                      accumulated: settings.accumulated,
+                      selectedTypeFilter: _selectedTypeFilter,
+                      isDark: isDark,
+                      onTypeFilterChanged: (type) {
+                        setState(() {
+                          if (_selectedTypeFilter == type) {
+                            _selectedTypeFilter = null;
+                          } else {
+                            _selectedTypeFilter = type;
+                            _selectedCategoryFilter = null;
+                          }
+                        });
+                      },
+                    ),
                   ),
                 ),
-              ),
 
-              // â”€â”€ Encabezado de lista â”€â”€
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Category label slides from top and pushes pills down
-                      AnimatedSize(
-                        duration: const Duration(milliseconds: 600),
-                        curve: Curves.easeInOutCubic,
-                        alignment: Alignment.topCenter,
-                        child: _selectedCategoryFilter != null
-                            ? TweenAnimationBuilder<Offset>(
-                                key: ValueKey(_selectedCategoryFilter),
-                                tween: Tween(
-                                  begin: const Offset(0, -1),
-                                  end: Offset.zero,
-                                ),
-                                duration: const Duration(milliseconds: 700),
-                                curve: Curves.easeInOutCubic,
-                                builder: (context, offset, child) {
-                                  return FractionalTranslation(
-                                    translation: offset,
-                                    child: child,
-                                  );
-                                },
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      _selectedCategoryFilter!,
-                                      style: const TextStyle(
-                                        fontSize: 22,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.black,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 12),
-                                  ],
-                                ),
-                              )
-                            : const SizedBox.shrink(),
-                      ),
-                      // Pills row
-                      SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        physics: const BouncingScrollPhysics(),
-                        child: Row(
-                          children: [
-                            _buildInfoPill(
-                              _monthFilterText,
-                              Icons.calendar_today_outlined,
-                              () => _showMonthPicker(data),
-                            ),
-                            const SizedBox(width: 8),
-                            Builder(builder: (context) {
-                              final activeList = ref.watch(activeListProvider);
-                              final listName = activeList != null
-                                  ? '${activeList.emoji} ${activeList.name}'
-                                  : 'ðŸ”’ Lista Privada';
-                              return _buildInfoPill(
-                                listName,
-                                Icons.keyboard_arrow_down,
-                                () => showModalBottomSheet(
-                                  context: context,
-                                  isScrollControlled: true,
-                                  backgroundColor: Colors.transparent,
-                                  builder: (_) => const UserListsModal(),
+                // ── Gráfico de Barras ──
+                SliverToBoxAdapter(
+                  child: SlideTransition(
+                    position: _chartSlide,
+                    child: FadeTransition(
+                      opacity: _chartFade,
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: RepaintBoundary(
+                          child: ValueListenableBuilder<double>(
+                            valueListenable: _scrollOffset,
+                            builder: (context, offset, _) {
+                              return SizedBox(
+                                height: 240,
+                                child: CategoryBarChart(
+                                  data: displayData,
+                                  savedCategories: ref.watch(categoryProvider),
+                                  entranceCtrl: _chartEntranceController,
+                                  scrollOffset: offset,
+                                  selectedCategoryFilter: _selectedCategoryFilter,
+                                  onCategoryToggle: (cat) {
+                                    setState(() {
+                                      _selectedCategoryFilter = (_selectedCategoryFilter == cat) ? null : cat;
+                                    });
+                                  },
+                                  onAddCategory: () => showModalBottomSheet(
+                                    context: context,
+                                    isScrollControlled: true,
+                                    backgroundColor: Colors.transparent,
+                                    builder: (_) => const CategoryEditorModal(),
+                                  ),
                                 ),
                               );
-                            }),
-                            if (_selectedCategoryFilter != null) ...[ 
-                              const SizedBox(width: 8),
-                              _buildInfoPill('${listData.length} transax.', Icons.list),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              // â”€â”€ Lista de transacciones â”€â”€
-              SliverPadding(
-                padding: EdgeInsets.only(
-                  bottom: _isSearchExpanded
-                      ? (MediaQuery.of(context).viewInsets.bottom + 120)
-                      : 110,
-                ),
-                sliver: listData.isEmpty
-                    ? SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 40),
-                          child: Column(
-                            children: [
-                              const Text('ðŸ¤‘',
-                                  style: TextStyle(fontSize: 48)),
-                              const SizedBox(height: 12),
-                              Text(
-                                'Sin transacciones aÃºn',
-                                style: TextStyle(
-                                    color: Colors.grey[400], fontSize: 16),
-                              ),
-                            ],
+                            },
                           ),
                         ),
-                      )
-                    : SliverList(
-                        delegate: SliverChildBuilderDelegate(
-                          (context, index) {
-                            final t = listData[index];
-                            
-                            bool showHeader = false;
-                            if (index == 0) {
-                              showHeader = true;
-                            } else {
-                              final prev = listData[index - 1];
-                              if (t.date.year != prev.date.year || t.date.month != prev.date.month || t.date.day != prev.date.day) {
-                                showHeader = true;
-                              }
-                            }
-
-                            Widget transactionWidget = TransactionItem(
-                              transaction: t,
-                              onDelete: () => transactionRepository.deleteTransaction(t.id),
-                            );
-
-                            if (showHeader) {
-                              final now = DateTime.now();
-                              final isToday = t.date.year == now.year && t.date.month == now.month && t.date.day == now.day;
-                              final dateStr = isToday ? 'Hoy' : DateFormat('dd MMM yyyy', 'es_ES').format(t.date);
-                              
-                              return Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 24, right: 24, top: 16, bottom: 4),
-                                    child: Text(
-                                      dateStr.toUpperCase(),
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13,
-                                        color: Colors.grey[500],
-                                        letterSpacing: 1.2,
-                                      ),
-                                    ),
-                                  ),
-                                  transactionWidget,
-                                ],
-                              );
-                            }
-                            return transactionWidget;
-                          },
-                          childCount: listData.length,
-                        ),
                       ),
-              ),
-            ],
-          );
-        },
-      )),
-      // â”€â”€ Bottom UI: voice transcript + bar â”€â”€
+                    ),
+                  ),
+                ),
+
+                // ── Banner freemium ──
+                if (!ref.watch(premiumProvider) && data.length >= kFreeTransactionLimit - 5)
+                  SliverToBoxAdapter(
+                    child: _FreemiumBanner(
+                      count: data.length,
+                      onUpgrade: () => showPremiumPaywall(context),
+                    ),
+                  ),
+
+                // ── Filtros y Pastillas ──
+                SliverToBoxAdapter(
+                  child: FadeTransition(
+                    opacity: _pillsFade,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildSelectedCategoryHeader(),
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            physics: const BouncingScrollPhysics(),
+                            child: Row(
+                              children: [
+                                _buildInfoPill(_monthFilterText, Icons.calendar_today_outlined, () => _showMonthPicker(data)),
+                                const SizedBox(width: 8),
+                                _buildListPickerPill(),
+                                if (_selectedCategoryFilter != null) ...[
+                                  const SizedBox(width: 8),
+                                  _buildInfoPill('${listData.length} transax.', Icons.list, null),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+
+                // ── Lista de Transacciones ──
+                SliverFadeTransition(
+                  opacity: _listFade,
+                  sliver: SliverPadding(
+                    padding: EdgeInsets.only(bottom: _isSearchExpanded ? 200 : 180),
+                    sliver: listData.isEmpty ? _buildEmptyState() : _buildTransactionList(listData, transactionRepository),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
       floatingActionButton: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Voice transcript + intent card â€” floats above the bar
           if (_isVoiceActive) _buildVoiceBubble(context),
           _buildCustomBottomBar(context),
         ],
@@ -455,420 +524,273 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     );
   }
 
-  // â”€â”€ GrÃ¡fica de barras â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  Widget _buildBarChart(List<Transaction> data, List<CategoryItem> savedCategories) {
-    final expenses = data.where((t) => t.type == 0).toList();
+  // ─────────────────────────────────────────────────────────────
+  // Elementos de la UI (Sub-widgets internos)
+  // ─────────────────────────────────────────────────────────────
 
-    // â”€â”€ 1. Todas las categorÃ­as del usuario, inicializadas en 0
-    final Map<String, double> categorySums = {};
-    for (final cat in savedCategories) {
-      categorySums[cat.name] = 0.0;
-    }
-
-    // â”€â”€ 2. Acumular gastos reales
-    for (var t in expenses) {
-      final key = (t.categoryName ?? 'Otros').trim();
-      categorySums[key] = (categorySums[key] ?? 0.0) + t.amount;
-    }
-
-    // â”€â”€ 3. Ordenar: con monto (desc) + sin monto (alfabÃ©tico)
-    final withAmount = categorySums.entries.where((e) => e.value > 0).toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final withoutAmount = categorySums.entries.where((e) => e.value == 0).toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-    final sortedKeys = [
-      ...withAmount.map((e) => e.key),
-      ...withoutAmount.map((e) => e.key),
-    ];
-
-    final maxAmount = withAmount.isNotEmpty ? withAmount.first.value : 0.0;
-
-    final palette = [
-      const Color(0xFFB4AEE8), const Color(0xFF90CAF9),
-      const Color(0xFFFFCC80), const Color(0xFFB3E5FC),
-      const Color(0xFFFFCDD2), const Color(0xFF81C784),
-      const Color(0xFFF48FB1), const Color(0xFFCE93D8),
-      const Color(0xFFA5D6A7), const Color(0xFFFFE082),
-      const Color(0xFF80DEEA), const Color(0xFFEF9A9A),
-    ];
-
-    return ValueListenableBuilder<double>(
-      valueListenable: _scrollOffset,
-      builder: (context, offset, child) {
-        final actualMaxBarHeight = maxAmount > 0 ? 200.0 : 60.0;
-        
-        // El choque ocurre exactamente cuando la punta de la barra mÃ¡s alta alcanza
-        // el borde inferior del header (donde estÃ¡n posicionadas las pastillitas).
-        // 24 (padding top) + 220 (altura del SizedBox) - actualMaxBarHeight = Distancia al borde
-        final touchOffset = 24.0 + (220.0 - actualMaxBarHeight);
-        final overlap = offset > touchOffset ? (offset - touchOffset) : 0.0;
-        
-        double scale = (actualMaxBarHeight - overlap) / actualMaxBarHeight;
-        if (scale < 0) scale = 0.0;
-
-        return SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            mainAxisAlignment: sortedKeys.length < 5 ? MainAxisAlignment.center : MainAxisAlignment.start,
-            children: sortedKeys.asMap().entries.map((entry) {
-              final i = entry.key;
-              final cat = entry.value;
-              final amt = categorySums[cat]!;
-              final isEmpty = amt == 0;
-
-              final emoji = savedCategories.firstWhere(
-                (c) => c.name == cat,
-                orElse: () => CategoryItem(name: '', emoji: CategoryUtils.getEmoji(cat)),
-              ).emoji;
-
-              final heightRatio = maxAmount > 0 ? amt / maxAmount : 0.0;
-              final baseBarHeight = isEmpty ? 36.0 : 60.0 + (140.0 * heightRatio);
-              final scaledHeight = baseBarHeight * scale;
-
-              String textAmt;
-              if (isEmpty) {
-                textAmt = '0';
-              } else if (amt >= 1000) {
-                textAmt = '${(amt / 1000).toStringAsFixed(1).replaceAll('.0', '')}K';
-              } else {
-                textAmt = amt.toInt().toString();
-              }
-
-              final isSelected = _selectedCategoryFilter == cat;
-              final opacity = _selectedCategoryFilter == null
-                  ? (isEmpty ? 0.38 : 1.0)
-                  : (isSelected ? 1.0 : 0.3);
-
-              return GestureDetector(
-                onTap: () {
-                  setState(() {
-                    if (_selectedCategoryFilter == cat) {
-                      _selectedCategoryFilter = null;
-                    } else {
-                      _selectedCategoryFilter = cat;
-                    }
-                  });
-                },
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      // Monto sobre la barra
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Text(
-                          textAmt,
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: isEmpty ? FontWeight.w400 : FontWeight.bold,
-                            color: isEmpty ? Colors.grey[400] : Colors.grey[600],
-                          ),
-                        ),
-                      ),
-                      // Barra
-                      Opacity(
-                        opacity: opacity,
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 600),
-                          curve: Curves.easeOutCubic,
-                          width: 54,
-                          height: scaledHeight.clamp(36.0, 200.0),
-                          decoration: BoxDecoration(
-                            color: palette[i % palette.length],
-                            borderRadius: BorderRadius.circular(27),
-                            border: isSelected
-                                ? Border.all(color: Colors.black87, width: 2)
-                                : isEmpty
-                                    ? Border.all(color: Colors.grey[300]!, width: 1.5)
-                                    : null,
-                          ),
-                          clipBehavior: Clip.antiAlias,
-                          child: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            alignment: Alignment.bottomCenter,
-                            child: Padding(
-                              padding: const EdgeInsets.only(bottom: 8),
-                              child: Text(
-                                emoji,
-                                style: TextStyle(fontSize: isEmpty ? 14 : 16),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      // Nombre debajo
-                      const SizedBox(height: 5),
-                      SizedBox(
-                        width: 60,
-                        child: Text(
-                          cat,
-                          textAlign: TextAlign.center,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                            color: isSelected ? Colors.black87 : Colors.grey[500],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }).toList(),
-          ),
-        );
-      }
+  Widget _buildSelectedCategoryHeader() {
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 600),
+      curve: Curves.easeInOutCubic,
+      alignment: Alignment.topCenter,
+      child: _selectedCategoryFilter != null
+          ? Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                _selectedCategoryFilter!,
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              ),
+            )
+          : const SizedBox.shrink(),
     );
   }
 
-  // â”€â”€ Barra inferior â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // Estado extra para la animaciÃ³n del mic (equivalente a _isSearching)
-  bool get _isMicCollapsing => _isVoiceActive && !_isVoicePillOpen;
+  Widget _buildListPickerPill() {
+    final activeList = ref.watch(activeListProvider);
+    final defaultList = ref.watch(defaultListProvider);
+    final listName = activeList != null ? '${activeList.emoji} ${activeList.name}' : '${defaultList.emoji} ${defaultList.name}';
+    return _buildInfoPill(listName, Icons.keyboard_arrow_down, () {
+      showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (_) => const UserListsModal(),
+      );
+    }, showLeadingIcon: false);
+  }
+
+  Widget _buildEmptyState() {
+    return SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.only(top: 40),
+        child: Column(
+          children: [
+            const Text('📭', style: TextStyle(fontSize: 48)),
+            const SizedBox(height: 12),
+            Text('Sin transacciones aún', style: TextStyle(color: Colors.grey[400], fontSize: 16)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTransactionList(List<Transaction> listData, dynamic repo) {
+    return SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (context, index) {
+          final t = listData[index];
+          bool showHeader = index == 0 || 
+            t.date.day != listData[index - 1].date.day ||
+            t.date.month != listData[index - 1].date.month ||
+            t.date.year != listData[index - 1].date.year;
+
+          Widget item = TransactionItem(
+            transaction: t,
+            onDelete: () => repo.deleteTransaction(t.id),
+          );
+
+          if (showHeader) {
+            final now = DateTime.now();
+            final isToday = t.date.year == now.year && t.date.month == now.month && t.date.day == now.day;
+            final dateStr = isToday ? 'Hoy' : DateFormat('dd MMM yyyy', 'es_ES').format(t.date);
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 4),
+                  child: Text(dateStr.toUpperCase(), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey[500], letterSpacing: 1.2)),
+                ),
+                item,
+              ],
+            );
+          }
+          return item;
+        },
+        childCount: listData.length,
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Barra de Búsqueda y Micrófono
+  // ─────────────────────────────────────────────────────────────
 
   Widget _buildCustomBottomBar(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final surfaceColor = isDark ? const Color(0xFF1C1C1E) : Colors.white;
     final totalWidth = MediaQuery.of(context).size.width;
-    // Ancho de la pastilla del mic:
-    //   Reposo            â†’ 70
-    //   Fase 1 (colapso)  â†’ 60  (se achica como un cÃ­rculo, dur 700ms)
-    //   Fase 2 (expansiÃ³n)â†’ toda la barra menos mÃ¡rgenes (dur 900ms)
-    final micWidth = _isVoicePillOpen
-        ? totalWidth - 48.0            // expandido
-        : (_isVoiceActive ? 60.0 : 70.0); // colapsando â†’ cÃ­rculo
-
-    // Ancho de la pastilla izquierda:
-    //   Se aplasta a 0 durante la FASE 2 (expansiÃ³n del mic)
-    final leftWidth = _isVoicePillOpen
-        ? 0.0
-        : (!_isSearching
-            ? 120.0
-            : (!_isSearchExpanded
-                ? 60.0
-                : totalWidth * 0.65));
+    final micWidth = _isVoicePillOpen ? totalWidth - 48.0 : (_isVoiceActive ? 60.0 : 70.0);
+    final leftWidth = _isVoicePillOpen ? 0.0 : (!_isSearching ? 120.0 : (!_isSearchExpanded ? 60.0 : totalWidth * 0.65));
 
     return Padding(
-      padding:
-          const EdgeInsets.symmetric(horizontal: 24.0, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 10),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          AnimatedContainer(
-            height: 60,
-            width: leftWidth,
-            duration: Duration(milliseconds: _isVoicePillOpen ? 900 : (_isSearching && !_isSearchExpanded ? 700 : 900)),
-            curve: Curves.easeInOutQuart,
+          // Barra de Búsqueda / Botón Add
+          SlideTransition(
+            position: _pillLeftSlide,
+            child: FadeTransition(
+              opacity: _pillsFade,
+              child: AnimatedContainer(
+            height: 60, width: leftWidth,
+            duration: const Duration(milliseconds: 900), curve: Curves.easeInOutQuart,
             decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(30),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black12,
-                  blurRadius: 10,
-                  offset: Offset(0, 5),
-                )
-              ],
+              color: surfaceColor, borderRadius: BorderRadius.circular(30),
+              boxShadow: isDark ? [] : const [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, 5))],
             ),
-            // Stack: layered so the icon glides over the top of the other content
-            child: Stack(
-              clipBehavior: Clip.hardEdge,
-              children: [
-                // â”€â”€ ADD BUTTON â€” visible y clickeable solo cuando no se busca
-                IgnorePointer(
-                  ignoring: _isSearching,
-                  child: AnimatedOpacity(
-                    opacity: _isSearching ? 0.0 : 1.0,
-                    duration: const Duration(milliseconds: 250),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: IconButton(
-                        icon: const Icon(Icons.add, color: Colors.black),
-                        onPressed: () => _showManualInput(context),
-                      ),
-                    ),
-                  ),
-                ),
-
-                // â”€â”€ SEARCH TEXT FIELD â€” solo activo cuando expandido
-                IgnorePointer(
-                  ignoring: !_isSearchExpanded,
-                  child: AnimatedOpacity(
-                    opacity: _isSearchExpanded ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 400),
-                    child: Align(
-                      alignment: Alignment.centerLeft,
-                      child: Padding(
-                        padding: const EdgeInsets.only(left: 16, right: 52),
-                        child: TextField(
-                          controller: _searchController,
-                          focusNode: _searchFocusNode,
-                          onChanged: (val) => setState(() => _searchQuery = val),
-                          decoration: const InputDecoration(
-                            hintText: 'Buscar...',
-                            border: InputBorder.none,
-                            isDense: true,
-                          ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final w = constraints.maxWidth;
+                return Stack(
+                  clipBehavior: Clip.hardEdge,
+                  children: [
+                    // + en primer cuarto
+                    if (!_isSearching) Positioned(
+                      left: w * 0.25 - 24,
+                      top: 0, bottom: 0,
+                      child: Center(
+                        child: GestureDetector(
+                          onTap: () => _showManualInput(context),
+                          child: const SizedBox(width: 48, height: 48,
+                            child: Icon(Icons.add, size: 24)),
                         ),
                       ),
                     ),
-                  ),
-                ),
-
-                 // â”€â”€ SEARCH / CLOSE ICON â€” slides across the pill â”€â”€
-                AnimatedAlign(
-                  alignment: (!_isSearching || _isSearchExpanded)
-                      ? Alignment.centerRight
-                      : Alignment.center,
-                  duration: Duration(milliseconds: _isSearching && !_isSearchExpanded ? 700 : 300),
-                  curve: Curves.easeInOutQuart,
-                  child: GestureDetector(
-                    onTap: () {
-                      if (_isSearching) {
-                        // Close: hide X immediately, collapse bar
-                        _searchFocusNode.unfocus();
-                        setState(() {
-                          _showCloseIcon = false;   // X fades out instantly
-                          _isSearchExpanded = false;
-                        });
-                        Future.delayed(const Duration(milliseconds: 700), () {
-                          if (mounted) {
-                            setState(() {
-                              _isSearching = false;
-                              _searchController.clear();
-                              _searchQuery = '';
-                            });
-                          }
-                        });
-                      } else {
-                        // Open step 1: collapse pill â†’ circle, lupa slides left
-                        setState(() { _isSearching = true; });
-                        // Open step 2: expand circle â†’ full bar
-                        Future.delayed(const Duration(milliseconds: 700), () {
-                          if (mounted && _isSearching) {
-                            setState(() { _isSearchExpanded = true; });
-                            // Step 2b: wait for lupa to fully fade (280ms) then show X
-                            Future.delayed(const Duration(milliseconds: 280), () {
-                              if (mounted && _isSearchExpanded) {
-                                setState(() { _showCloseIcon = true; });
-                              }
-                            });
-                            // Open step 3: keyboard after bar finishes expanding
-                            Future.delayed(const Duration(milliseconds: 900), () {
-                              if (mounted && _isSearchExpanded) {
-                                _searchFocusNode.requestFocus();
-                                // Scroll smoothly so first transaction is visible
-                                Future.delayed(const Duration(milliseconds: 400), () {
-                                  if (mounted && _scrollController.hasClients) {
-                                    _scrollController.animateTo(
-                                      _firstTransactionScrollOffset,
-                                      duration: const Duration(milliseconds: 1400),
-                                      curve: Curves.easeInOutCubic,
-                                    );
-                                  }
-                                });
-                              }
-                            });
-                          }
-                        });
-                      }
-                    },
-                    // Two icons stacked; they fade sequentially â€” never both visible
-                    child: SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          // Lupa: fades out as soon as bar is expanded
-                          AnimatedOpacity(
-                            opacity: _isSearchExpanded ? 0.0 : 1.0,
-                            duration: const Duration(milliseconds: 250),
-                            child: const Icon(Icons.search, color: Colors.black),
-                          ),
-                          // X: only appears AFTER lupa has fully disappeared
-                          AnimatedOpacity(
-                            opacity: _showCloseIcon ? 1.0 : 0.0,
-                            duration: const Duration(milliseconds: 250),
-                            curve: Curves.easeIn,
-                            child: const Icon(Icons.close, color: Colors.black),
-                          ),
-                        ],
+                    // Campo de búsqueda cuando está expandido
+                    if (_isSearchExpanded) Padding(
+                      padding: const EdgeInsets.only(left: 16, right: 52),
+                      child: TextField(
+                        controller: _searchController, focusNode: _searchFocusNode,
+                        textAlignVertical: TextAlignVertical.center,
+                        onChanged: (val) => setState(() => _searchQuery = val),
+                        decoration: const InputDecoration(
+                          hintText: 'Buscar...',
+                          border: InputBorder.none,
+                          isDense: false,
+                          contentPadding: EdgeInsets.zero,
+                        ),
                       ),
                     ),
-                  ),
-                ),
-              ],
+                    // Lupa/cerrar: sigue la pastilla proporcionalmente durante la animación
+                    Positioned(
+                      left: _isSearchExpanded
+                          ? w - 48            // expandido → al borde derecho
+                          : _isSearching
+                              ? w * 0.5 - 24  // colapsado (pill 60px) → centro de la pill
+                              : w * 0.70 - 24, // normal (pill 120px) → 3er cuarto
+                      top: 0, bottom: 0,
+                      child: Center(
+                        child: GestureDetector(
+                          onTap: _toggleSearch,
+                          child: SizedBox(width: 48, height: 48,
+                            child: Icon(_isSearchExpanded ? Icons.close : Icons.search)),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
           ),
-          // â”€â”€ MIC / VOICE PILL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-          GestureDetector(
-            onTap: _isVoiceActive ? null : _startVoiceInline,
-            onLongPress: _isVoiceActive ? null : _startVoiceInline,
+            ),
+          ),
+
+          // Botón Mic — tap o long-press para iniciar; solo X lo detiene
+          SlideTransition(
+            position: _pillRightSlide,
+            child: FadeTransition(
+              opacity: _pillsFade,
+              child: GestureDetector(
+            onTap: () => _startVoiceInline(),
+            onLongPressStart: (_) => _startVoiceInline(),
+            onPanStart: (details) {
+              _micDragStartY = details.globalPosition.dy;
+              _micDragTriggered = false;
+            },
+            onPanUpdate: (details) {
+              if (_micDragTriggered || _micDragStartY == null) return;
+              final dragUp = _micDragStartY! - details.globalPosition.dy;
+              if (dragUp > 28) {
+                _micDragTriggered = true;
+                HapticFeedback.mediumImpact();
+                if (!_isVoiceActive) _startVoiceInline();
+              }
+            },
+            onPanEnd: (_) {
+              _micDragStartY = null;
+              _micDragTriggered = false;
+            },
+            onPanCancel: () {
+              _micDragStartY = null;
+              _micDragTriggered = false;
+            },
             child: AnimatedContainer(
-              height: 60,
-              width: micWidth,
-              duration: Duration(
-                  milliseconds: _isVoicePillOpen
-                      ? 900  // Fase 2: expansiÃ³n lenta hacia la izquierda
-                      : (_isVoiceActive ? 700 : 500)), // Fase 1: colapso / vuelta
+              height: 60, width: micWidth,
+              duration: Duration(milliseconds: _isVoicePillOpen ? 900 : 700),
               curve: Curves.easeInOutQuart,
               decoration: BoxDecoration(
-                color: const Color(0xFFFF5252),
-                borderRadius: BorderRadius.circular(30),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFFFF5252)
-                        .withValues(alpha: _isVoiceActive ? 0.55 : 0.4),
-                    blurRadius: _isVoiceActive ? 22 : 15,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
+                color: const Color(0xFFFF5252), borderRadius: BorderRadius.circular(30),
+                boxShadow: [BoxShadow(color: const Color(0xFFFF5252).withOpacity(isDark ? 0.2 : 0.4), blurRadius: 15, offset: const Offset(0, 8))],
               ),
               child: Stack(
-                clipBehavior: Clip.hardEdge,
                 children: [
-                  // â”€â”€ MIC ICON â€” desliza de centerRight â†’ centerLeft
-                  //    igual que la lupa desliza de right â†’ center
                   AnimatedAlign(
-                    alignment: _isVoicePillOpen
-                        ? Alignment.centerLeft   // expandido: va a la izquierda
-                        : Alignment.center,       // reposo / colapso: centro
-                    duration: Duration(
-                        milliseconds: _isVoicePillOpen ? 900 : 300),
-                    curve: Curves.easeInOutQuart,
+                    alignment: _isVoicePillOpen ? Alignment.centerLeft : Alignment.center,
+                    duration: const Duration(milliseconds: 900),
                     child: Padding(
-                      padding: EdgeInsets.only(
-                          left: _isVoicePillOpen ? 18 : 0),
-                      child: const Icon(Icons.mic,
-                          color: Colors.white, size: 30),
-                    ),
-                  ),
-                  // â”€â”€ CLOSE BUTTON â€” solo activo cuando la pill estÃ¡ expandida
-                  IgnorePointer(
-                    ignoring: !_isVoicePillOpen,
-                    child: AnimatedOpacity(
-                      opacity: _isVoicePillOpen ? 1.0 : 0.0,
-                      duration: const Duration(milliseconds: 350),
-                      curve: Curves.easeIn,
-                      child: Align(
-                        alignment: Alignment.centerRight,
-                        child: Padding(
-                          padding: const EdgeInsets.only(right: 16),
-                          child: GestureDetector(
-                            onTap: _stopVoiceInline,
-                            child: const Icon(Icons.close,
-                                color: Colors.white70, size: 22),
-                          ),
-                        ),
+                      padding: EdgeInsets.only(left: _isVoicePillOpen ? 18 : 0),
+                      child: AnimatedBuilder(
+                        animation: _micPulseCtrl,
+                        builder: (context, child) {
+                          // Pulso de escala: 1.0 → 1.25 cuando el motor STT capta audio
+                          final scale = _isMicListening
+                              ? 1.0 + (_micPulseCtrl.value * 0.25)
+                              : 1.0;
+                          // Halo de fondo que respira
+                          final haloOpacity = _isMicListening
+                              ? _micPulseCtrl.value * 0.35
+                              : 0.0;
+                          return Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              // Halo pulsante
+                              Transform.scale(
+                                scale: scale,
+                                child: Container(
+                                  width: 44, height: 44,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.white.withOpacity(haloOpacity),
+                                  ),
+                                ),
+                              ),
+                              // Icono: mic_none cuando activo pero STT entre sesiones,
+                              //        mic cuando STT captura de verdad
+                              Icon(
+                                _isVoiceActive && !_isMicListening
+                                    ? Icons.mic_none
+                                    : Icons.mic,
+                                color: Colors.white,
+                                size: 30,
+                              ),
+                            ],
+                          );
+                        },
                       ),
                     ),
                   ),
+                  if (_isVoicePillOpen) Align(
+                    alignment: Alignment.centerRight,
+                    child: IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white70),
+                      onPressed: _stopVoiceInline,
+                    ),
+                  ),
                 ],
               ),
+            ),
+          ),
             ),
           ),
         ],
@@ -876,522 +798,268 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen>
     );
   }
 
+  void _toggleSearch() {
+    if (_isSearching) {
+      _searchFocusNode.unfocus();
+      setState(() { _isSearchExpanded = false; });
+      Future.delayed(const Duration(milliseconds: 700), () {
+        if (mounted) setState(() { _isSearching = false; _searchQuery = ''; _searchController.clear(); });
+      });
+    } else {
+      setState(() { _isSearching = true; });
+      Future.delayed(const Duration(milliseconds: 700), () {
+        if (mounted) {
+          setState(() { _isSearchExpanded = true; });
+          // Scroll hasta mostrar las pastillas de filtro antes de que aparezca el teclado
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (mounted && _scrollController.hasClients) {
+              _scrollController.animateTo(
+                _firstTransactionScrollOffset,
+                duration: const Duration(milliseconds: 450),
+                curve: Curves.easeInOutCubic,
+              );
+            }
+          });
+          Future.delayed(const Duration(milliseconds: 900), () => _searchFocusNode.requestFocus());
+        }
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Voice Bubble
+  // ─────────────────────────────────────────────────────────────
+
+  Widget _buildVoiceBubble(BuildContext context) {
+    if (!_isVoicePillOpen) return const SizedBox.shrink();
+    
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final surfaceColor = isDark ? const Color(0xFF1C1C1E) : Colors.white;
+    
+    final hasIntent = _voiceIntent != null && _voiceIntent!.amount != null;
+    final isExpense = _voiceIntent?.action != IntentAction.create_income;
+    final color = hasIntent ? (isExpense ? const Color(0xFFFF5252) : const Color(0xFF4CAF50)) : const Color(0xFF7C4DFF);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: surfaceColor, borderRadius: BorderRadius.circular(20),
+          boxShadow: isDark ? [] : [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 20, offset: const Offset(0, -4))],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_voiceTranscript.isEmpty ? 'Di algo...' : '"$_voiceTranscript"',
+                 style: TextStyle(fontSize: 15, fontStyle: FontStyle.italic, color: _voiceTranscript.isEmpty ? Colors.grey : (isDark ? Colors.white : Colors.black87))),
+            if (hasIntent) Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Etiqueta de fecha detectada
+                  if (_voiceIntent!.date != null) Builder(builder: (_) {
+                    final now = DateTime.now();
+                    final d = _voiceIntent!.date!;
+                    final diff = DateTime(now.year, now.month, now.day)
+                        .difference(DateTime(d.year, d.month, d.day)).inDays;
+                    String label;
+                    if (diff == 0) label = 'Hoy';
+                    else if (diff == 1) label = 'Ayer';
+                    else if (diff == 2) label = 'Anteayer';
+                    else if (diff > 0) label = 'Hace $diff días';
+                    else label = 'En $diff días';
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        children: [
+                          Icon(Icons.calendar_today_outlined, size: 13, color: color),
+                          const SizedBox(width: 5),
+                          Text(label, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600)),
+                        ],
+                      ),
+                    );
+                  }),
+                  Row(
+                    children: [
+                      Expanded(child: Text(_voiceIntent!.isMultiItem ? '${_voiceIntent!.lineItems.length} transacciones detectadas' : '${_voiceIntent!.description} (${_voiceIntent!.category})', style: TextStyle(fontWeight: FontWeight.bold, color: isDark ? Colors.white : Colors.black87))),
+                      Text('${isExpense ? "-" : "+"}\$${_voiceIntent!.amount}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: color)),
+                      const SizedBox(width: 8),
+                      // Palomita siempre verde con pulso animado
+                      TweenAnimationBuilder<double>(
+                        tween: Tween(begin: 0.7, end: 1.0),
+                        duration: const Duration(milliseconds: 600),
+                        curve: Curves.elasticOut,
+                        builder: (context, scale, child) => Transform.scale(
+                          scale: scale,
+                          child: child,
+                        ),
+                        child: GestureDetector(
+                          onTap: _confirmVoice,
+                          child: Container(
+                            width: 44, height: 44,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF00C853),
+                              shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: const Color(0xFF00C853).withOpacity(0.45),
+                                  blurRadius: 12,
+                                  spreadRadius: 2,
+                                ),
+                              ],
+                            ),
+                            child: const Icon(Icons.check_rounded, color: Colors.white, size: 26),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Modals y Helpers
+  // ─────────────────────────────────────────────────────────────
 
   void _showManualInput(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => const ManualTransactionModal(),
-    );
+    showModalBottomSheet(context: context, isScrollControlled: true, backgroundColor: Colors.transparent, builder: (_) => const ManualTransactionModal());
   }
-
-
 
   void _showSettings(BuildContext context) {
-    // Reset y arranca con curva ultra-smooth
     _settingsAnimController.reset();
-
     showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      useSafeArea: false,
-      enableDrag: true,
-      barrierColor: Colors.black.withOpacity(0.4),
-      // transitionAnimationController: Flutter usa este controller para el slide
-      // Al pasarle el nuestro (700ms, easeOutCubic vÃ­a forma de la curva)
-      // conseguimos el efecto ultra-smooth.
+      context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
       transitionAnimationController: _settingsAnimController,
-      builder: (context) => const SettingsModal(),
+      builder: (_) => const SettingsModal(),
     );
-  }
-
-  String _getMonthName(int month) {
-    const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
-    return months[month - 1];
-  }
-
-  String get _monthFilterText {
-    if (_selectedMonthFilter == null) return 'Todo el tiempo';
-    final now = DateTime.now();
-    if (_selectedMonthFilter!.year == now.year && _selectedMonthFilter!.month == now.month) return 'Este mes';
-    return '${_getMonthName(_selectedMonthFilter!.month)} ${_selectedMonthFilter!.year}';
   }
 
   void _showMonthPicker(List<Transaction> allTransactions) {
     showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => MonthPickerModal(
+      context: context, isScrollControlled: true, backgroundColor: Colors.transparent,
+      builder: (_) => MonthPickerModal(
         initialSelectedMonth: _selectedMonthFilter,
         allTransactions: allTransactions,
-        onApply: (selectedMonth) {
-          setState(() { _selectedMonthFilter = selectedMonth; });
-          Navigator.pop(context);
-        },
+        onApply: (val) => setState(() => _selectedMonthFilter = val),
       ),
     );
   }
 
-  // Voice bubble floats above the bottom bar showing real-time transcript
-  Widget _buildVoiceBubble(BuildContext context) {
-    final hasIntent = _voiceIntent != null && _voiceIntent!.amount != null;
-    final isExpense = _voiceIntent?.action != IntentAction.create_income;
-    final color = hasIntent
-        ? (isExpense ? const Color(0xFFFF5252) : const Color(0xFF4CAF50))
-        : const Color(0xFF7C4DFF);
-    final amountStr = hasIntent
-        ? '${isExpense ? "-" : "+"}\$${_voiceIntent!.amount?.toStringAsFixed(0)}'
-        : '';
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24),
-      child: AnimatedSize(
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeInOutCubic,
-        alignment: Alignment.bottomCenter,
-        child: _isVoicePillOpen
-            ? TweenAnimationBuilder<Offset>(
-                tween: Tween(begin: const Offset(0, 0.3), end: Offset.zero),
-                duration: const Duration(milliseconds: 500),
-                curve: Curves.easeOutCubic,
-                builder: (ctx, offset, child) =>
-                    FractionalTranslation(translation: offset, child: child),
-                child: Container(
-                  width: double.infinity,
-                  margin: const EdgeInsets.only(bottom: 12),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 14),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.08),
-                        blurRadius: 20,
-                        offset: const Offset(0, -4),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Real-time transcript text
-                      AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 150),
-                        child: Text(
-                          _voiceTranscript.isEmpty
-                              ? 'Di algo...'
-                              : '"$_voiceTranscript"',
-                          key: ValueKey(_voiceTranscript),
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontStyle: _voiceTranscript.isEmpty
-                                ? FontStyle.normal
-                                : FontStyle.italic,
-                            color: _voiceTranscript.isEmpty
-                                ? Colors.grey[400]
-                                : Colors.black87,
-                            height: 1.4,
-                          ),
-                        ),
-                      ),
-                      // Detected intent slides in below transcript
-                      AnimatedSize(
-                        duration: const Duration(milliseconds: 350),
-                        curve: Curves.easeInOutCubic,
-                        child: hasIntent
-                            ? Padding(
-                                padding: const EdgeInsets.only(top: 12),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            _voiceIntent!.description ?? '',
-                                            style: const TextStyle(
-                                                fontWeight: FontWeight.w700,
-                                                fontSize: 14),
-                                          ),
-                                          Text(
-                                            _voiceIntent!.category ?? '',
-                                            style: TextStyle(
-                                                fontSize: 12,
-                                                color: Colors.grey[500]),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    Text(
-                                      amountStr,
-                                      style: TextStyle(
-                                        fontSize: 22,
-                                        fontWeight: FontWeight.w900,
-                                        color: color,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 10),
-                                    GestureDetector(
-                                      onTap: _confirmVoice,
-                                      child: Container(
-                                        padding: const EdgeInsets.all(9),
-                                        decoration: BoxDecoration(
-                                            color: color,
-                                            shape: BoxShape.circle),
-                                        child: const Icon(Icons.check,
-                                            color: Colors.white, size: 18),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              )
-                            : const SizedBox.shrink(),
-                      ),
-                    ],
-                  ),
-                ),
-              )
-            : const SizedBox.shrink(),
-      ),
-    );
+  String get _monthFilterText {
+    if (_selectedMonthFilter == null) return 'Todo el tiempo';
+    if (_selectedMonthFilter!.year == DateTime.now().year && _selectedMonthFilter!.month == DateTime.now().month) return 'Este mes';
+    return DateFormat('MMMM yyyy', 'es_ES').format(_selectedMonthFilter!);
   }
 
-  Widget _buildInfoPill(String text, IconData icon, [VoidCallback? onTap]) {
+  Widget _buildInfoPill(String text, IconData icon, VoidCallback? onTap, {bool showLeadingIcon = true}) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
         decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.02),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
+          color: isDark ? const Color(0xFF1C1C1E) : Colors.white, borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: isDark ? const Color(0xFF3A3A3C) : Colors.grey.withOpacity(0.2)),
+        ),
+        child: Row(
+          children: [
+            if (showLeadingIcon) ...[
+              Icon(icon, size: 14, color: isDark ? Colors.grey[400] : Colors.grey[700]),
+              const SizedBox(width: 6),
+            ],
+            Text(text, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: isDark ? Colors.white : Colors.black87)),
+            const SizedBox(width: 4),
+            Icon(Icons.keyboard_arrow_down, size: 16, color: isDark ? Colors.grey[400] : Colors.grey[700]),
+          ],
+        ),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: Colors.grey[700]),
-          const SizedBox(width: 6),
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey[800],
-            ),
-          ),
-          const SizedBox(width: 4),
-          Icon(Icons.keyboard_arrow_down, size: 16, color: Colors.grey[500]),
-        ],
-      ),
-    ),
-   );
+    );
   }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// BotÃ³n de micrÃ³fono con tap + long press + feedback visual
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-class _MicButton extends StatefulWidget {
-  final VoidCallback onPressed;
-  const _MicButton({required this.onPressed});
+// ── Banner de límite freemium ─────────────────────────────────────────────────
 
-  @override
-  State<_MicButton> createState() => _MicButtonState();
-}
+class _FreemiumBanner extends StatelessWidget {
+  final int count;
+  final VoidCallback onUpgrade;
 
-class _MicButtonState extends State<_MicButton> {
-  bool _pressed = false;
-
-  void _handlePress() {
-    setState(() => _pressed = true);
-    Future.delayed(const Duration(milliseconds: 120), () {
-      if (mounted) setState(() => _pressed = false);
-    });
-    widget.onPressed();
-  }
+  const _FreemiumBanner({required this.count, required this.onUpgrade});
 
   @override
   Widget build(BuildContext context) {
+    final remaining = kFreeTransactionLimit - count;
+    final isAtLimit = remaining <= 0;
+    final progress = (count / kFreeTransactionLimit).clamp(0.0, 1.0);
+
     return GestureDetector(
-      onTap: _handlePress,
-      onLongPress: _handlePress,
-      onTapDown: (_) => setState(() => _pressed = true),
-      onTapUp: (_) => setState(() => _pressed = false),
-      onTapCancel: () => setState(() => _pressed = false),
-      child: AnimatedScale(
-        scale: _pressed ? 0.88 : 1.0,
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.easeOutCubic,
-        child: Container(
-          height: 70,
-          width: 70,
-          decoration: BoxDecoration(
-            color: const Color(0xFFFF5252),
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFFFF5252).withValues(alpha: _pressed ? 0.2 : 0.4),
-                blurRadius: _pressed ? 6 : 15,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: const Icon(Icons.mic, color: Colors.white, size: 32),
-        ),
-      ),
-    );
-  }
-}
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// SliverPersistentHeaderDelegate â€” Header fijo con balance
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-class _BalanceHeaderDelegate extends SliverPersistentHeaderDelegate {
-  final double balance;
-  final double totalIncome;
-  final double totalExpense;
-  final VoidCallback onSettingsPressed;
-  final double topPadding;
-  final bool showIncome;
-  final bool accumulated;
-  final int? selectedTypeFilter;
-  final ValueChanged<int> onTypeFilterChanged;
-
-  const _BalanceHeaderDelegate({
-    required this.balance,
-    required this.totalIncome,
-    required this.totalExpense,
-    required this.onSettingsPressed,
-    required this.topPadding,
-    required this.showIncome,
-    required this.accumulated,
-    required this.selectedTypeFilter,
-    required this.onTypeFilterChanged,
-  });
-
-  @override
-  double get maxExtent => 260.0 + topPadding; // Push content further down
-
-  @override
-  double get minExtent => 260.0 + topPadding;
-
-  @override
-  bool shouldRebuild(_BalanceHeaderDelegate old) =>
-      old.balance != balance ||
-      old.totalIncome != totalIncome ||
-      old.totalExpense != totalExpense ||
-      old.topPadding != topPadding ||
-      old.showIncome != showIncome ||
-      old.accumulated != accumulated ||
-      old.selectedTypeFilter != selectedTypeFilter;
-
-  @override
-  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            const Color(0xFFF6F6F9),
-            const Color(0xFFF6F6F9),
-            const Color(0xFFF6F6F9).withValues(alpha: 0.0),
-            const Color(0xFFF6F6F9).withValues(alpha: 0.0),
-          ],
-          stops: const [0.0, 0.78, 0.92, 1.0], // Fade starts right as elements touch the pills
-        ),
-      ),
-      child: Stack(
-        children: [
-          // Settings button top right
-          Positioned(
-            top: topPadding + 64, // Pushed lower but resting above the main amount
-            right: 16,
-            child: Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.white,
-                boxShadow: [
-                  BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 4, offset: const Offset(0, 2))
-                ]
-              ),
-              child: IconButton(
-                icon: const Icon(Icons.settings_outlined, color: Colors.black),
-                onPressed: onSettingsPressed,
-              ),
-            ),
-          ),
-          
-          // Center Content
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 25.0), // Allows pills to sit right before the transparent gradient
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  // TOTAL label
-                  Text(
-                    accumulated ? 'TOTAL ACUMULADO' : 'TOTAL',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.grey,
-                      letterSpacing: 1.4,
-                      height: 1.0,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  
-                  // Amount row with subtle gradient glow
-                  Stack(
-                    alignment: Alignment.center,
-                    clipBehavior: Clip.none,
-                    children: [
-                      Positioned(
-                        child: Container(
-                          width: 140,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.white.withOpacity(0.9),
-                                blurRadius: 40,
-                                spreadRadius: 30,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8.0, right: 4.0),
-                            child: Text(
-                              '\$',
-                              style: TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.grey[400],
-                              ),
-                            ),
-                          ),
-                          AnimatedDefaultTextStyle(
-                            duration: const Duration(milliseconds: 200),
-                            style: const TextStyle(
-                              fontSize: 58, // large numbers
-                              fontWeight: FontWeight.w900,
-                              color: Colors.black,
-                              letterSpacing: -1.0,
-                              height: 1.1,
-                            ),
-                            child: Text(
-                              NumberFormat('#,##0.00', 'en_US').format(balance),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                  
-                  const SizedBox(height: 12),
-                  
-                  // Pills
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _buildPill(totalExpense, false, selectedTypeFilter == 0, () => onTypeFilterChanged(0)),
-                      if (showIncome) ...[
-                        const SizedBox(width: 12),
-                        _buildPill(totalIncome, true, selectedTypeFilter == 1, () => onTypeFilterChanged(1)),
-                      ]
-                    ],
-                  )
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPill(double amount, bool isIncome, bool isSelected, VoidCallback onTap) {
-    final color = isIncome ? const Color(0xFF4CAF50) : const Color(0xFFF44336);
-    final amtString = NumberFormat('#,##0.00', 'en_US').format(amount);
-    
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      onTap: onUpgrade,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
-          color: isSelected ? color : Colors.white,
-          borderRadius: BorderRadius.circular(30),
-          border: Border.all(color: color, width: isSelected ? 0 : 1.5),
-          boxShadow: isSelected 
-              ? [BoxShadow(color: color.withOpacity(0.4), blurRadius: 10, offset: const Offset(0, 4))]
-              : null,
+          gradient: LinearGradient(
+            colors: isAtLimit
+                ? [const Color(0xFFB71C1C), const Color(0xFFE53935)]
+                : [const Color(0xFF1A237E), const Color(0xFF3949AB)],
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(isIncome ? Icons.arrow_upward : Icons.arrow_downward, size: 14, color: isSelected ? Colors.white : color),
-            const SizedBox(width: 5),
-            Text(
-              '\$$amtString',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: isSelected ? Colors.white : color),
+            Row(
+              children: [
+                Text(isAtLimit ? '🔒' : '⚡', style: const TextStyle(fontSize: 16)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    isAtLimit
+                        ? 'Límite alcanzado · Activa Premium para continuar'
+                        : 'Te quedan $remaining transacciones gratis',
+                    style: const TextStyle(color: Colors.white,
+                        fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Text('Ver Premium',
+                    style: TextStyle(color: Colors.white,
+                        fontSize: 11, fontWeight: FontWeight.bold)),
+                ),
+              ],
             ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: progress,
+                backgroundColor: Colors.white.withOpacity(0.2),
+                valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                minHeight: 4,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text('$count / $kFreeTransactionLimit transacciones usadas',
+              style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 11)),
           ],
         ),
       ),
     );
   }
 }
-
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// AnimationController que aplica una curva easeOutCubic al valor
-// devuelto, consiguiendo un slide ultra-smooth en showModalBottomSheet
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-class _CurvedAnimController extends AnimationController {
-  final Curve curve;
-  final Curve reverseCurve;
-
-  _CurvedAnimController({
-    required super.vsync,
-    required super.duration,
-    super.reverseDuration,
-    this.curve = Curves.easeOutCubic,
-    this.reverseCurve = Curves.easeInCubic,
-  });
-
-  @override
-  double get value {
-    final raw = super.value;
-    // Al avanzar (forward) usamos curve; al retroceder usamos reverseCurve
-    if (status == AnimationStatus.reverse || status == AnimationStatus.dismissed) {
-      return reverseCurve.transform(raw);
-    }
-    return curve.transform(raw);
-  }
-}
-

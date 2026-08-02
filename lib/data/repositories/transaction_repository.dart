@@ -19,6 +19,11 @@ class TransactionRepository {
 
   Future<List<Transaction>> getAllTransactions() => _db.getAllTransactions();
 
+  Future<int> getTransactionCount() async {
+    final all = await _db.getAllTransactions();
+    return all.length;
+  }
+
   // ── Crear ─────────────────────────────────────────────────
 
   Future<void> addTransaction({
@@ -59,6 +64,45 @@ class TransactionRepository {
       type: Value(isIncome ? 1 : 0),
       listId: Value(listId),
     ));
+  }
+
+  // ── Etiquetas (Tags) ──────────────────────────────────────
+
+  /// Reemplaza una etiqueta por otra en todas las transacciones de una lista.
+  /// Si [newTag] es null o vacío, elimina la etiqueta.
+  /// Todas las actualizaciones se ejecutan en una sola transacción (atómica).
+  Future<int> updateTag(String oldTag, String? newTag, int? listId) async {
+    final allTransactions = await _db.getAllTransactions();
+    final oldPattern = '#$oldTag';
+    final newPattern = (newTag == null || newTag.isEmpty) ? '' : '#$newTag';
+
+    final toUpdate = allTransactions.where((t) {
+      if (t.listId != listId) return false;
+      return t.description.split(' ').contains(oldPattern);
+    }).toList();
+
+    if (toUpdate.isEmpty) return 0;
+
+    await _db.transaction(() async {
+      for (final t in toUpdate) {
+        final descParts = t.description.split(' ');
+        final newParts = descParts.map((word) {
+          if (word == oldPattern) {
+            return newPattern;
+          }
+          return word;
+        }).where((word) => word.isNotEmpty).toList();
+        
+        final newDesc = newParts.join(' ').trim();
+        
+        await _db.updateTransaction(TransactionsCompanion(
+          id: Value(t.id),
+          description: Value(newDesc),
+        ));
+      }
+    });
+
+    return toUpdate.length;
   }
 
   // ── Eliminar ──────────────────────────────────────────────

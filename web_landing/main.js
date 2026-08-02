@@ -25,18 +25,23 @@ window.addEventListener('beforeinstallprompt', (e) => {
     }
 });
 
-// 3. Función Maestra: Instalador Automático One-Shot Definitivo
+// 3. Función Maestra: Descarga real compatible con MIUI/Xiaomi/Redmi
 function triggerOfficialDirectInstallation() {
-    // Usamos el archivo en la raíz para evitar fallos de ruta o CDN cache
     const apkUrl = '/installer.apk';
 
     // Mostramos la guía visual de apoyo DE INMEDIATO
     const modal = document.getElementById('install-guide');
     if (modal) modal.style.display = 'flex';
 
-    // Lanzamos la descarga del instalador real de Android
-    // Sin parámetros basura (?v=X) para que Chrome lo trate como una descarga pura
-    window.location.assign(apkUrl);
+    // Usamos <a download> en vez de window.location.assign()
+    // MIUI bloquea la navegación directa pero respeta el click en un enlace con download
+    const link = document.createElement('a');
+    link.href = apkUrl;
+    link.download = 'iMoney.apk';
+    link.setAttribute('type', 'application/vnd.android.package-archive');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 }
 
 // 4. Lógica combinada del BANNER superior (INSTALAR APP)
@@ -82,6 +87,14 @@ window.addEventListener('click', (e) => {
         modal.style.display = 'none';
     }
 });
+
+// Tabs del modal de instalación
+function showTab(tab, btn) {
+    document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.device-tab').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-' + tab).style.display = 'grid';
+    btn.classList.add('active');
+}
 
 // Animaciones (Lucide ya está en index.html)
 const observerOptions = { threshold: 0.1 };

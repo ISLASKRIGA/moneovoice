@@ -8,11 +8,11 @@ class MonthPickerModal extends StatefulWidget {
   final ValueChanged<DateTime?> onApply;
 
   const MonthPickerModal({
-    Key? key,
+    super.key,
     required this.initialSelectedMonth,
     required this.allTransactions,
     required this.onApply,
-  }) : super(key: key);
+  });
 
   @override
   State<MonthPickerModal> createState() => _MonthPickerModalState();
@@ -101,6 +101,7 @@ class _MonthPickerModalState extends State<MonthPickerModal> {
             children: [
               GestureDetector(
                 onTap: () {
+                  if (_selectedMonth == null) return; // ya está en 'Todo el tiempo'
                   setState(() {
                     _selectedMonth = null;
                   });
